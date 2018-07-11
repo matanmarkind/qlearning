@@ -1,4 +1,3 @@
-from random import randint
 from collections import namedtuple
 import numpy as np
 
@@ -39,7 +38,7 @@ class RingBuf:
         :param num: Number of elements to sample.
         :return: a list of elements.
         """
-        ids = [randint(0, self.size-1) for i in range(num)]
+        ids = [np.random.randint(0, self.size) for i in range(num)]
         return [self.data[i] for i in ids]
 
     @property
@@ -55,7 +54,98 @@ class RingBuf:
     def __len__(self):
         return self.size
 
-    
+
+class WeightedBuf():
+    """
+    This class is a buffer which can hold elements, but with weighted selection.
+    Can ontain any element so long as it has a weight property which is a
+    numeric value (ele.weight).
+
+    Implemented as a binary tree where each node holds the sum of the weights
+    of its children.
+    """
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.index = 0
+        self.tree = self.make_tree(capacity)
+
+    def __getitem__(self, idx):
+        """
+        Retrieve a memory from the buffer via its id.
+        :param idx: idx of the element.
+        :return:
+        """
+        return self.tree[-1][idx]
+
+    def append(self, ele):
+        """
+        Appends an element to the buffer and updates the weights of its
+        parent nodes.
+        :param ele:
+        :return: old element
+        """
+        old_ele = self.tree[-1].append(ele)
+        if old_ele is not None:
+            delta = ele.weight - old_ele.weight
+            self.update_weight(self.index % self.capacity, delta)
+            self.index += 1
+        return old_ele
+
+    def make_tree(self, capacity):
+        """
+        Create a tree with all weights initialized to 0.
+        """
+        c = 1
+        tree = []
+        while c < capacity:
+            tree.append(np.zeros(c))
+            c *= 2
+        tree.append(RingBuf(capacity))
+        return tree
+
+    def get_leaf(self):
+        """
+        Randomly select a leaf from the tree based on the weights in the tree.
+        Returns the id of the leaf (the index).
+        """
+        val = np.random.randint(0, self.tree[0][0])
+        idx = 0
+        for depth in range(1, len(self.tree) - 1):
+            left_weight = self.tree[depth][idx]
+            if val >= left_weight:
+                val -= left_weight
+                idx = (idx + 1) * 2
+            else:
+                idx *= 2
+        left_weight = self[idx].weight
+        return idx + (val >= left_weight)
+
+    def update_weight(self, idx, delta):
+        """
+        Go up each row updating the parent nodes with the new weight.
+        :param idx: index of the changed experience.
+        :param delta: change in weights for that index.
+        """
+        self[idx].weight += delta
+        idx //= 2
+        for depth in range(-2, -len(self.tree) - 1, -1):
+            self.tree[depth][idx] += delta
+            idx //= 2
+
+    def sample(self, num):
+        """
+        Sample a number of unique experiences. Shouldn't cause too much change
+        in the effective weights since we are assuming the batch_size is much
+        smaller than the experience buffer.
+        :param num: how many experiences to sample.
+        Returns a unique set of indices for the leaves in the tree.
+        """
+        idxs = set()
+        while len(idxs) < num:
+            idxs |= {self._get_leaf()}
+        return np.array(list(idxs))
+
 class WeightedExpBuf():
     """
     An experience buffer to hold the memory for a neural network so that
@@ -76,18 +166,6 @@ class WeightedExpBuf():
         self.exp_count = 0  # num experiences added
         self.capacity = capacity
         self.tree = self.make_tree(capacity)
-        
-    def make_tree(self, capacity):
-        """
-        Create a tree with all weights initialized to 0.
-        """
-        c = 1
-        tree = []
-        while c < capacity:
-            tree.append([0] * c)
-            c *= 2
-        tree.append(RingBuf(capacity))
-        return tree
 
     def append(self, state, action, reward, next_state, is_terminal):
         """
@@ -103,10 +181,8 @@ class WeightedExpBuf():
         :return:
         """
         exp = Experience(0, state, action, reward, next_state, not is_terminal)
-        old_exp = tree[-1].append(exp)
-        self._update_tree(self.exp_count, -old_exp)
-        self.exp_count += 1
-    
+
+
     def update_tree(self, new_weights):
         """
         Take a batch of (memory_id, weight) with which to update the tree.
@@ -115,56 +191,8 @@ class WeightedExpBuf():
             delta = weight - self.tree[-1][index].weight
             self._update_tree(index, delta)
 
-    def sample(self, num):
-      """
-      Sample a number of unique experiences. Shouldn't cause too much change
-      in the effective weights since we are assuming the batch_size is much
-      smaller than the experience buffer.
-      :param num: how many experiences to sample.
-      Returns a unique set of idx's for the leaves in the tree.
-      """
-      idxs = set()
-      while len(idxs) < num:
-        idxs |= {self._get_leaf() for i in range(num)}
 
-      s = 
-      for i, idx in enumerate(idxs):
-        if i > num:
-          return 
 
-      return {
-
-    
-    def _get_leaf(self):
-        """
-        Randomly select a leaf from the tree based on the weights in the tree.
-        Returns the id of the leaf (the index).
-        """
-        val = np.random.randint(0, tree[0][0])
-        idx = 0
-        depth = len(tree) - 1
-        for d in range(1, depth):
-          left_weight = tree[d][idx].weight
-          if val >= left_weight:
-              val -= left_weight
-              idx = (idx + 1) * 2
-          else:
-              idx *= 2
-          left_weight = tree[depth][idx].weight
-          return idx + (val >= left_weight)
-
-    def _update_tree(self, index, delta):
-        """
-        Go up each row updating the parent nodes with the new weight.
-        :param index: index in the leaves of the changed experience.
-        :param delta: change in weights for that index.
-        """
-        idx = index % self.capacity
-        for depth in range(-2, -len(self.tree) - 1, -1):
-            tree[depth][idx] += delta
-            idx // 2
-
-            
 class ExpBuf():
     def __init__(self, capacity):
         """
