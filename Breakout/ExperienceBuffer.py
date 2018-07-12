@@ -1,4 +1,4 @@
-from collections import namedtuple
+from random import sample
 import numpy as np
 
 class RingBuf:
@@ -11,11 +11,13 @@ class RingBuf:
         self.index = 0
         self.data = [None] * self.capacity
 
-    def __getitem__(self, index):
+    def __getitem__(self, items):
         """
-        Returns the item inside of the buffer. Handles wraparound.
+        Returns the items inside of the buffer. Handles wraparound.
         """
-        return self.data[index % self.capacity]
+        if isinstance(items, list):
+            return [self.data[idx % self.capacity] for idx in items]
+        return self.data[items % self.capacity]
 
     def append(self, element):
         """
@@ -38,7 +40,7 @@ class RingBuf:
         :param num: Number of elements to sample.
         :return: a list of elements.
         """
-        ids = [np.random.randint(0, self.size) for i in range(num)]
+        ids = sample(range(self.size), num)
         return [self.data[i] for i in ids]
 
     @property
@@ -55,11 +57,11 @@ class RingBuf:
         return self.size
 
 
-class WeightedBuf():
+class WeightedRingBuf():
     """
-    This class is a buffer which can hold elements, but with weighted selection.
-    Can ontain any element so long as it has a weight property which is a
-    numeric value (ele.weight).
+    A ring buffer which holds weighted elements. The weights determine the
+    probability of selecting a given item when sampling. Can hold any element
+    so long as it has a .weight property which is numeric.
 
     Implemented as a binary tree where each node holds the sum of the weights
     of its children.
@@ -72,7 +74,7 @@ class WeightedBuf():
 
     def __getitem__(self, idx):
         """
-        Retrieve a memory from the buffer via its id.
+        Retrieve an item from the underlying buffer.
         :param idx: idx of the element.
         :return:
         """
@@ -85,11 +87,16 @@ class WeightedBuf():
         :param ele:
         :return: old element
         """
+        weight = ele.weight
+        ele.weight = 0
         old_ele = self.tree[-1].append(ele)
-        if old_ele is not None:
-            delta = ele.weight - old_ele.weight
-            self.update_weight(self.index % self.capacity, delta)
-            self.index += 1
+        old_weight = 0 if old_ele is None else old_ele.weight
+        
+        self._update_weight(self.index % self.capacity, weight - old_weight)
+        # Must reset ele.weight since now it is (weight - old_weight)
+        ele.weight = weight
+        
+        self.index += 1
         return old_ele
 
     def make_tree(self, capacity):
@@ -120,12 +127,21 @@ class WeightedBuf():
                 idx *= 2
         left_weight = self[idx].weight
         return idx + (val >= left_weight)
-
-    def update_weight(self, idx, delta):
+    
+    def update_weight(self, index, weight):
         """
-        Go up each row updating the parent nodes with the new weight.
+        Reset the weight of an element and update the weights in the tree.
+        """
+        idx = index % self.capacity
+        delta = weight - self[idx].weight
+        self._update_weight(idx, delta)
+
+    def _update_weight(self, idx, delta):
+        """
+        Resets the weight of the element identified by index, then
+        goes up each row updating the parent nodes with the new weight.
         :param idx: index of the changed experience.
-        :param delta: change in weights for that index.
+        :param delta: change in weight of the element.
         """
         self[idx].weight += delta
         idx //= 2
@@ -143,9 +159,10 @@ class WeightedBuf():
         """
         idxs = set()
         while len(idxs) < num:
-            idxs |= {self._get_leaf()}
-        return np.array(list(idxs))
+            idxs.add(self.get_leaf())
+        return list(idxs)
 
+    
 class WeightedExpBuf():
     """
     An experience buffer to hold the memory for a neural network so that
@@ -154,9 +171,14 @@ class WeightedExpBuf():
     the network replays experiences each memory will also come with an id
     so that the network can update the losses after replay.
     """
-    Experience = namedtuple(
-        'Experience',
-        ['weight', 'state', 'action', 'reward', 'next_state', 'not_terminal'])
+    class Experience():
+        def __init__(self, state, action, reward, next_state, not_terminal, weight):
+            self.state = state
+            self.action = action
+            self.reward = reward
+            self.next_state = next_state
+            self.not_terminal = not_terminal
+            self.weight = weight
 
     def __init__(self, capacity):
         """
@@ -180,7 +202,7 @@ class WeightedExpBuf():
         :param is_terminal: did the game finish
         :return:
         """
-        exp = Experience(0, state, action, reward, next_state, not is_terminal)
+        exp = Experience(state, action, reward, next_state, not is_terminal, 0)
 
 
     def update_tree(self, new_weights):
