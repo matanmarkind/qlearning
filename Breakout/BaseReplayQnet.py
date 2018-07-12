@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from RingBuf import ExpBuf
+from ExperienceBuffer import ExpBuf
 import tensorflow as tf
 import numpy as np
 

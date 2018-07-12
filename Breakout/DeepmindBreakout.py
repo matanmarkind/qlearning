@@ -11,7 +11,7 @@ https://github.com/boyuanf/DeepQLearning/blob/master/deep_q_learning.py
 """
 
 from BaseReplayQnet import  BaseReplayQnet
-from RingBuf import ExpBuf
+from ExperienceBuffer import ExpBuf
 from datetime import datetime
 from resource import getrusage, RUSAGE_SELF
 
