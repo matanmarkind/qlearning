@@ -13,8 +13,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
     Designed for tensorflow.
     """
     def __init__(self, input_shape, n_actions, batch_size,
-                 optimizer, exp_buf_capacity, exp_buf = ExpBuf, discount = .99,
-                 initializer = tf.contrib.layers.xavier_initializer):
+                 optimizer, exp_buf_capacity, exp_buf = ExpBuf, discount = .99):
         """
         Initializes the base with the values we expect all Qnet's will want. To
         save some boilerplate later on.
@@ -33,13 +32,11 @@ class BaseReplayQnet(metaclass=ABCMeta):
         - len(exp_buf) = number of experiences
         :param optimizer: tf.train.<optimizer>()
         :param discount: Discount of future rewards.
-        :param initializer: Initializer for weights and biases of network(s).
         """
         self.input_shape = input_shape
         self.n_actions = n_actions
         self.batch_size = batch_size
         self.discount = discount
-        self.initializer = initializer
         self.exp_buf = exp_buf(exp_buf_capacity)
 
         # Create a tensor to take batches of inputs
@@ -58,18 +55,13 @@ class BaseReplayQnet(metaclass=ABCMeta):
         # states.
         self.prediction = tf.argmax(self.main_net, 1)
 
-        # Create a training operation, and needed inputs, to learn from batches
-        # of experiences using some form of SGD.
-        # - taken_actions_input - action taken by the network the first time
-        #   this state was encountered. From exp_buf. tf.placeholder.
-        # - target_vals_input - "true" value of a given state. This is used
-        #   as the expected value for calculating the error/loss of the model.
-        # - train_op - optimizer.minimize(self.loss). SGD function that the
-        #   model will use to update itself.
-        res = self.make_train_op(optimizer)
-        self.taken_actions_input = res[0]
-        self.target_vals_input = res[1]
-        self.train_op = res[2]
+        # When an experience is replayed we calculate the predicted value of
+        # retaking an action in a past state (state_input, taken_actions_input).
+        # The loss is then based on comparing this value to some "true" value
+        # of having retaken that same action in the past state.
+        #
+        # The network is then updated based on backpropogating this value.
+        self.loss, self.train_op = self.make_train_op(optimizer)
 
     def make_nn(self, scope: str):
         """
@@ -92,37 +84,58 @@ class BaseReplayQnet(metaclass=ABCMeta):
 
     def make_train_op(self, optimizer):
         """
-        Define a training operation so that the main_net can learn. Expects to
-        work on batches of experiences from self.exp_buf.
-        :param optimizer: tf.train.<optimizer>
-        :return: taken_actions_input, target_vals_inpt, train_op
-        """
+        Whenever an experience is replayed we calculate how much value the
+        network believes it can get if it was back in that old state and
+        selected the same action, pred_vals.
+
+        We then calculate the "true" value of being back in state and acting
+        the same, target_vals. By comparing the 2 we can calculate the loss
+        and use that the learn.
+
+        - taken_actions_input - action taken by the network the first time
+          this state was encountered. From exp_buf. tf.placeholder.
+        - target_vals_input - "true" value of a given state. This is used
+          as the expected value for calculating the error/loss of the model.
+        - loss - some function that calculates the loss as a function of
+          the "true" value of retaking the same action in a past state,
+          versus the value the network currently predicts from retaking that
+          action back in that past state.
+        - train_op - optimizer.minimize(loss). SGD function that the model
+          will use to update itself.
+          """
+
         with tf.variable_scope('train_op'):
             # Create a one hot encoding of the actions taken when this state was
             # first experienced. Used to isolate the current Q value for the
             # action previously taken.
-            actions_taken_input = tf.placeholder(shape=(None), dtype=tf.int32)
-            actions_onehot = tf.one_hot(actions_taken_input, self.n_actions,
+            self.taken_actions_input = tf.placeholder(shape=(None),
+                                                      dtype=tf.int32)
+            actions_onehot = tf.one_hot(self.taken_actions_input,
+                                        self.n_actions,
                                         dtype=tf.float32)
-            actual_vals = tf.reduce_sum(self.main_net * actions_onehot, axis=1)
+            pred_vals = tf.reduce_sum(self.main_net * actions_onehot, axis=1)
 
             # the "true" Q value.
-            target_vals_input = tf.placeholder(shape=(None), dtype=tf.float32)
+            self.target_vals_input = tf.placeholder(shape=(None),
+                                                    dtype=tf.float32)
 
-            # Train by minimizing the loss defined by the full implementation
-            # via the SGD optimizer provided by the implementation.
-            train_op = optimizer.minimize(
-                self.loss(target_vals_input, actual_vals))
 
-            return actions_taken_input, target_vals_input, train_op
+            # Calculate the loss as a function of the target_val versus the
+            # predicted value.
+            loss = self.loss_fn(self.target_vals_input, pred_vals)
+
+            # Train the network via SGB based on the loss
+            train_op = optimizer.minimize(loss)
+
+            return loss, train_op
 
     @abstractmethod
-    def loss(self, expected, actual):
+    def loss_fn(self, expected, actual):
         """
         A function for calculating the loss of the neural network. Common
         examples include RootMeanSquare or HuberLoss.
         :param expected: a batch of target_vals
-        :param actual: a batch of ouputs from the network
+        :param actual: a batch of outputs from the network
         :return: a batch of losses.
         """
         pass

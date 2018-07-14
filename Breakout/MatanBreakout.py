@@ -1,17 +1,17 @@
 """
-This is an attempt to recreate the algorithm that was used by deepmind in the
-first major paper they published about beating atari games.
-https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
-
-Uses some changes suggested in
-https://becominghuman.ai/lets-build-an-atari-ai-part-1-dqn-df57e8ff3b26
-
-And the gaps were filled based on the implementation in
-https://github.com/boyuanf/DeepQLearning/blob/master/deep_q_learning.py
+This is an attempt to create a more advanced Q net to beat Breakout. Still
+based largely on the deepmind paper, but trying to work in some other
+features
+    - Huber loss
+    - Weighted experience replay
+    - Double DQN
+    - Deuling networks
+    - Updated reward function
+    - Adamoptimizer
 """
 
 from BaseReplayQnet import  BaseReplayQnet
-from ExperienceBuffer import ExpBuf
+from ExperienceBuffer import WeightedExpBuf
 from datetime import datetime
 from resource import getrusage, RUSAGE_SELF
 
@@ -49,6 +49,8 @@ parser.add_argument(
 parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
+parser.add_argument('--future_reward_discount', type=float, default=.99,
+                    help="Exponential decay rate of future rewards")
 
 def preprocess_img(img):
     """
@@ -69,15 +71,23 @@ def normalize(states):
     """
     return states.astype(np.float32) / 255.
 
-class DeepmindBreakoutQnet(BaseReplayQnet):
+class MatanBreakoutQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
     def __init__(self, input_shape, n_actions, batch_size,
-                 optimizer, exp_buf_capacity, discount = .99):
+                 optimizer, exp_buf_capacity, update_target_net_rate, discount):
         BaseReplayQnet.__init__(
             self, input_shape, n_actions, batch_size, optimizer, exp_buf_capacity,
-            ExpBuf, discount)
+            WeightedExpBuf, discount)
+
+        self.replay_count = 0  # Number of experiences replayed
+        self.update_target_net_rate = update_target_net_rate
+
+        # This NN evaluates the value of the action selected by the
+        # main_net. This is the secondary net that will be updated by copying
+        # from the main_net every tau updates (tau = update_target_net)
+        self.target_net = self.make_nn('target_net')
 
     def make_nn_impl(self):
         """
@@ -86,24 +96,43 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         applied to the final output.
         :return:
         """
+        # Use a convolutional network to analyze the state which is a set of
+        # normalized images.
         initializer = tf.contrib.layers.xavier_initializer
-        conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
+        conv1 = tf.layers.conv2d(self.state_input, 32, (8, 8), (4, 4),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
+        conv2 = tf.layers.conv2d(conv1, 64, (4, 4), (2, 2),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
+        conv3 = tf.layers.conv2d(conv2, 64, (3, 3), (1, 1),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        return tf.layers.dense(hidden, self.n_actions,
-                               kernel_initializer=initializer(),
-                               bias_initializer=initializer())
+        hidden = tf.layers.dense(tf.layers.flatten(conv3), 512,
+                                 activation=tf.nn.relu,
+                                 kernel_initializer=initializer(),
+                                 bias_initializer=initializer())
 
-    def loss_fn(self, expected, actual):
+        # Dueling Qnet. This allows the netowrk to learn the value of being in
+        # a given state and separately to learn which action taken in that state
+        # will be the most advantageous.
+        v, a = tf.split(hidden, 2, 1)
+        value = tf.layers.dense(inputs=v, units=1,
+                                kernel_initializer=initializer(),
+                                bias_initializer=initializer())
+        advantage = tf.layers.dense(inputs=a, units=self.n_actions,
+                                    kernel_initializer=initializer(),
+                                    bias_initializer=initializer())
+
+        # advantage is used to determine the relative advantage of any move.
+        # value is the base value of just being in this state.
+        adv_offset = tf.reduce_mean(advantage, axis=1, keepdims=True)
+        return value + advantage - adv_offset
+
+    def loss(self, expected, actual):
         """
         A function for calculating the loss of the neural network. Common
         examples include RootMeanSquare or HuberLoss.
@@ -119,8 +148,10 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         memory and replaying them.
         :param sess: tf.Session()
         """
+        self.replay_count += self.batch_size
+
         # Get a batch of past experiences.
-        states, actions, rewards, next_states, not_terminals = \
+        exp_ids, states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
         states = normalize(states)
         next_states = normalize(next_states)
@@ -131,24 +162,35 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         next_actions = self.predict(sess, next_states)
         # Calculate the Q value for each of the next_states, and take the Q
         # value of the action we would take for each next_state.
-        fullQ = sess.run(self.main_net,
+        fullQ = sess.run(self.target_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[:, next_actions]
 
         # Discounted future value:
-        # trueQ = r + discount * Q(next_state, next_action)
-        # If this is a terminal term, trueQ = r
+        # If this is a terminal term: trueQ = r
+        # else: trueQ = r + discount * Q(next_state, next_action)
         target_vals = rewards + not_terminals * self.discount * nextQ
 
         # Calculate the value of being back in state and performing action. Then
         # compare that the the expected value just calculated. This is used to
-        # compute the error for feedback. Then backpropogate the loss so that
-        # the network can update.
-        _ = sess.run(self.train_op,
-                        feed_dict={
-                         self.state_input: states,
-                         self.taken_actions_input: actions,
-                         self.target_vals_input: target_vals})
+        # compute the error for feedback.
+        loss, _ = sess.run([self.loss, self.train_op],
+                           feed_dict={
+                               self.state_input: states,
+                               self.taken_actions_input: actions,
+                               self.target_vals_input: target_vals})
+
+        # TODO: verify loss is in the same order as exp_ids
+        self.exp_buf.update_weights(exp_ids, loss)
+
+        self.update_target_net()
+
+    def update_target_net(self):
+        if self.replay_count < self.update_target_net_rate:
+            return
+        self.replay_count = 0
+        # TODO: Copy main_net to target_net
+
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -215,9 +257,9 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
     # Print info about the state of the network
     exp_buf_size = qnet.exp_buf_size()
     exp_buf_capacity = qnet.exp_buf_capacity()
-    turn_str =\
+    turn_str = \
         ' turn=' + str(exp_buf_size) if exp_buf_size < exp_buf_capacity else ''
-    e_str = '' if e < args.e_f else '{:0.2f}'.format(e)
+    e_str = '' if e > args.e_f else str(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
