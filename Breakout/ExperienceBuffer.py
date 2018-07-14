@@ -112,7 +112,7 @@ class WeightedExpBuf():
         state, action, reward, next_state, not_terminal = [], [], [], [], []
         for exp in self.experiences[ids]:
             state.append(exp.state)
-            action.append(exp.action)
+            # action.append(exp.action)
             reward.append(exp.reward)
             next_state.append(exp.next_state)
             not_terminal.append(exp.not_terminal)
