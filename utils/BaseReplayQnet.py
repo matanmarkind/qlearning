@@ -1,8 +1,8 @@
 from abc import ABCMeta, abstractmethod
-from ExperienceBuffer import ExpBuf
 import tensorflow as tf
 import numpy as np
 
+from .ExperienceBuffer import ExpBuf
 
 class BaseReplayQnet(metaclass=ABCMeta):
     """

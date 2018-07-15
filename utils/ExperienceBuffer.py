@@ -1,4 +1,4 @@
-from RingBuffer import RingBuf, WeightedRingBuf
+from .RingBuffer import RingBuf, WeightedRingBuf
 import numpy as np
 
 class ExpBuf():
