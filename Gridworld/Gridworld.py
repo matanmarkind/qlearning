@@ -29,19 +29,57 @@ class Gridworld():
         plt.ion()
         plt.show()
 
-    def __del__(self):
-        # Turn off live plotting.
-        plt.close()
-        plt.ioff()
+    def render(self):
+        plt.imshow(self._grid_to_img(self.grid))
+        plt.draw()
+        plt.pause(np.finfo(np.double).tiny)
 
+    def reset(self):
+        self.grid = self._create_grid(self.shape)
+        return self._grid_to_img(self.grid)
 
-    def create_grid(self, shape):
+    def step(self, action):
+        """
+        Progress the game by taking an actiona nd moving the blue tile.
+        :param action: int to be converted to self.Action
+        :return: img, reward, done, info
+        """
+        action = self.Action(action)
+        color = self.Color.BLACK  # color that blue moves onto.
+        row, col = np.argwhere(self.grid == self.Color.BLUE)[0]
+        if (action == self.Action.UP):
+            color = self._move_to(row-1, col)
+        elif (action == self.Action.DOWN):
+            color = self._move_to(row+1, col)
+        elif (action == self.Action.RIGHT):
+            color = self._move_to(row, col+1)
+        elif (action == self.Action.LEFT):
+            color = self._move_to(row, col-1)
+
+        reward = self._calc_reward(color)
+        # Game doesn't have an end condition, so randomly decide if done.
+        # 90% done by 100 turns.
+        done = np.random.random() > (1 - .9) ** (1 / 100)  # .977
+        # No extra info to give, but want to have a gym-like interface.
+        return self._grid_to_img(self.grid), reward, done, {}
+
+    @property
+    def n_actions(self):
+        """
+        :return: Number of possible actions
+        """
+        return 4
+
+    def sample_action(self):
+        return np.random.randint(0, self.n_actions)
+
+    def _create_grid(self, shape):
         grid = np.full(shape, self.Color.BLACK, dtype=self.Color)
-        grid = self.place_color(grid, 3, self.Color.GREEN)
-        grid = self.place_color(grid, 2, self.Color.RED)
-        return self.place_color(grid, 1, self.Color.BLUE)
+        grid = self._place_color(grid, 3, self.Color.GREEN)
+        grid = self._place_color(grid, 2, self.Color.RED)
+        return self._place_color(grid, 1, self.Color.BLUE)
 
-    def place_color(self, grid, num, color):
+    def _place_color(self, grid, num, color):
         """
         Randomly place some amount of colors on top of unoccupied (black) elements.
         :param grid:
@@ -60,7 +98,8 @@ class Gridworld():
 
         return grid
 
-    def grid_to_img(self, grid):
+
+    def _grid_to_img(self, grid):
         """
         Takes in a grid which has enum Color values and makes it into an img.
         Assumes the colors are RGB and the value alligns with the depth of
@@ -82,16 +121,8 @@ class Gridworld():
                 img[r:(r+scale), c:(c+scale), color.value] = 255
         return img
 
-    def render(self):
-        plt.imshow(self.grid_to_img(self.grid))
-        plt.draw()
-        plt.pause(np.finfo(np.double).tiny)
 
-    def reset(self):
-        self.grid = self.create_grid(self.shape)
-        return self.grid_to_img(self.grid)
-
-    def move_to(self, next_row, next_col):
+    def _move_to(self, next_row, next_col):
         """
         Move the blue tile to the new row and column.
         :param row:
@@ -105,35 +136,12 @@ class Gridworld():
         color = self.grid[next_row, next_col]
         self.grid[at_row, at_col] = self.Color.BLACK
         self.grid[next_row, next_col] = self.Color.BLUE
-        self.grid = self.place_color(self.grid, 1, color)
+        self.grid = self._place_color(self.grid, 1, color)
         return color
 
 
-    def step(self, action):
-        """
-        Progress the game by taking an actiona nd moving the blue tile.
-        :param action: int to be converted to self.Action
-        :return: img, reward, done, info
-        """
-        action = self.Action(action)
-        color = self.Color.BLACK  # color that blue moves onto.
-        row, col = np.argwhere(self.grid == self.Color.BLUE)[0]
-        if (action == self.Action.UP):
-            color = self.move_to(row-1, col)
-        elif (action == self.Action.DOWN):
-            color = self.move_to(row+1, col)
-        elif (action == self.Action.RIGHT):
-            color = self.move_to(row, col+1)
-        elif (action == self.Action.LEFT):
-            color = self.move_to(row, col-1)
 
-        reward = self.calc_reward(color)
-        # Game doesn't have an end condition, so randomly decide if done.
-        done = np.random.randint(0, 100) >= 98  # 87% done within 100 turns
-        # No extra info to give, but want to have a gym-like interface.
-        return self.grid_to_img(self.grid), reward, done, {}
-
-    def calc_reward(self, color):
+    def _calc_reward(self, color):
         """
         Calculate reward for moving to a new color.
         :param color:
@@ -148,15 +156,11 @@ class Gridworld():
         elif color == self.Color.BLUE:
             assert False, "Internal Failure, can't move to BLUE"
 
-    @property
-    def n_actions(self):
-        """
-        :return: Number of possible actions
-        """
-        return 4
+    def __del__(self):
+        # Turn off live plotting.
+        plt.close()
+        plt.ioff()
 
-    def sample_action(self):
-        return np.random.randint(0, self.n_actions)
 
 def main():
     rows, cols = 5, 5
