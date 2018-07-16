@@ -14,7 +14,9 @@ from datetime import datetime
 from resource import getrusage, RUSAGE_SELF
 import tensorflow as tf
 import numpy as np
-import gym, os, argparse, sys, time
+import os, argparse, sys, time
+
+from Gridworld import Gridworld
 
 parent_dir = os.path.dirname(sys.path[0])
 if parent_dir not in sys.path:
@@ -54,24 +56,20 @@ parser.add_argument(
 
 def preprocess_img(img):
     """
-    Images are converted from RGB to grayscale and downsampled by a factor of
-    2. Deepmind actually used a final 84x84 image by cropping since their GPU
-    wanted a square input for convolutions. We do not preprocess, rather we
-    store as uint8 for the sake of memory.
-    :param img: Atari image (210, 160, 3)
+    Downsample Gridworld image by a factor of 2.
+    :param img: grid image (25, 25, 3)
     :return: Grayscale downsample version (105, 80)
     """
-    return np.mean(img[::2, ::2], axis=2).astype(np.uint8)
+    return img[::2, ::2, :]
 
-def normalize(states):
+def normalize(img):
     """
-
-    :param states: numpy array of states
-    :return:
+    :param states: downsampled gridworld image
+    :return: normalized img with values on [-1, 1)
     """
-    return states.astype(np.float32) / 255.
+    return img.astype(np.float32) / 128. - 1
 
-class DeepmindBreakoutQnet(BaseReplayQnet):
+class BasicGridworldQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
@@ -89,18 +87,21 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         :return:
         """
         initializer = tf.contrib.layers.xavier_initializer
-        conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
+        conv1 = tf.layers.conv2d(self.state_input, 8, (4, 4), (3, 3),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
+        print(conv1)
+        conv2 = tf.layers.conv2d(conv1, 16, (3, 3), (2, 2),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
+        print(conv2)
+        hidden = tf.layers.dense(tf.layers.flatten(conv2), 64,
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
+        print(hidden)
         return tf.layers.dense(hidden, self.n_actions,
                                kernel_initializer=initializer(),
                                bias_initializer=initializer())
@@ -158,36 +159,35 @@ def play_episode(args, sess, env, qnet, e):
     experiences.
     :param args: parser.parse_args
     :param sess: tf.Session()
-    :param env: gym.make()
+    :param env: Gridworld()
     :param qnet: class which holds the NN to play and update.
     :param e: chance of a random action selection.
     :return: reward earned in the game, update value of e
     """
     done = False
-    img = preprocess_img(env.reset())
-    state = np.stack((img, img, img, img), axis=2)
+    state = preprocess_img(env.reset())
     reward = 0  # total reward for this episode
     turn = 0
-
 
     while not done:
         action = qnet.predict(sess, normalize(np.array([state])))[0]
         if np.random.rand(1) < e:
             action = qnet.rand_action()
 
-        img, r, done, _ = env.step(action + 1) # 0 & 1 don't do anything
-        img = np.reshape(preprocess_img(img), (105, 80, 1))
-        next_state = np.concatenate((state[:, :, :3], img), axis=2)
-        # TODO: r += info['ale.lives'] - old_lives??
-        # Feels weird to clip the reward, but comes from Deepmind paper...
-        qnet.add_experience(state, action, np.clip(r, -1, 1), next_state, done)
+        img, r, done, _ = env.step(action)
+        next_state = preprocess_img(img)
+        qnet.add_experience(state, action, r, next_state, done)
 
-        if turn % (qnet.batch_size // 8) == 0 and qnet.exp_buf_size() > args.begin_updates:
+        if qnet.exp_buf_size() > args.begin_updates:
             # Once we have enough experiences in the buffer we can
-            # start learning. We want to use each experience on average 8 times
-            # so that is why for a batch size of 8 we would update every turn.
-            qnet.update(sess)
+            # start learning.
+            if turn % (qnet.batch_size // 8) == 0:
+                # We want to use each experience on average 8 times so
+                # that's why for a batch size of 8 we would update every turn.
+                qnet.update(sess)
             if e > args.e_f:
+                # Reduce once for every update on 8 states. This makes e
+                # not dependent on the batch_size.
                 e -= (args.e_i - args.e_f) / args.e_anneal
 
         state = next_state
@@ -229,8 +229,22 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
           sep='')
 
     # save the model
-    model_name = 'model-deepmind-' + str(episode+1) + '.ckpt'
+    model_name = 'model-BasicGridworld-' + str(episode+1) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
+
+def get_qnet(args, scope=''):
+    """
+    Wrapper for getting the Gridworld network so don't have to copy and paste
+    the same params each time.
+    """
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return BasicGridworldQnet(
+            input_shape = (25, 25, 3), n_actions=4,
+            batch_size=args.batch_size,
+            optimizer=tf.train.AdamOptimizer(),
+            exp_buf_capacity=args.exp_capacity)
+
+
 
 def train(args):
     """
@@ -240,12 +254,9 @@ def train(args):
     :param args: parser.parse_args
     :return:
     """
-    env = gym.make('BreakoutDeterministic-v4')
+    env = Gridworld(5, 5)
     tf.reset_default_graph()
-    qnet = DeepmindBreakoutQnet(
-        input_shape = (105, 80, 4), n_actions=3, batch_size=args.batch_size,
-        optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-        exp_buf_capacity=args.exp_capacity)
+    qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
     saver = tf.train.Saver()
@@ -265,13 +276,9 @@ def train(args):
             maybe_output(args, sess, saver, qnet, episode, e, rewards)
 
 def show_game(args):
-    env = gym.make('BreakoutDeterministic-v4')
+    env = Gridworld(5, 5)
     tf.reset_default_graph()
-    qnet = DeepmindBreakoutQnet(
-        input_shape = (105, 80, 4), n_actions=3, batch_size=args.batch_size,
-        optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-        exp_buf_capacity=args.exp_capacity)
-
+    qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
     saver = tf.train.Saver()
@@ -279,9 +286,8 @@ def show_game(args):
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
         saver.restore(sess, args.ckpt_path)
         done = False
-        img = preprocess_img(env.reset())
+        state = preprocess_img(env.reset())
         _ = env.render()
-        state = np.stack((img, img, img, img), axis=2)
 
         while not done:
             time.sleep(.25)
@@ -289,8 +295,7 @@ def show_game(args):
 
             img, r, done, _ = env.step(action + 1) # 0 and 1 don't do anything
             _ = env.render()
-            img = np.reshape(preprocess_img(img), (105, 80, 1))
-            state = np.concatenate((state[:, :, :3], img), axis=2)
+            state = preprocess_img(img)
 
 def main():
     args = parser.parse_args(sys.argv[1:])

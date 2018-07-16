@@ -163,7 +163,8 @@ class Gridworld():
 
 
 def main():
-    rows, cols = 5, 5
+    # Play a random game.
+    rows, cols = 10, 5
     gridworld = Gridworld(rows, cols)
     state = gridworld.reset()
     done = False
