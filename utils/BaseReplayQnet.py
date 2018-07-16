@@ -70,7 +70,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
         :param scope: tf.variable_scope for creating this network within.
         :return: A neural network from self.state_input -> self.n_actions
         """
-        with tf.variable_scope(scope):
+        with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
             return self.make_nn_impl()
 
     @abstractmethod
@@ -104,7 +104,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
           will use to update itself.
           """
 
-        with tf.variable_scope('train_op'):
+        with tf.variable_scope('train_op', reuse=tf.AUTO_REUSE):
             # Create a one hot encoding of the actions taken when this state was
             # first experienced. Used to isolate the current Q value for the
             # action previously taken.
