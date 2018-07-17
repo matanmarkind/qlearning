@@ -53,6 +53,9 @@ parser.add_argument(
 parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
+parser.add_argument(
+    '--learn_rate', type=float, default=1e-3,
+    help="learning rate for the network. passed to the optimizer.")
 
 def preprocess_img(img):
     """
@@ -60,7 +63,7 @@ def preprocess_img(img):
     :param img: grid image (25, 25, 3)
     :return: Grayscale downsample version (105, 80)
     """
-    return img[::2, ::2, :]
+    return (img[::2, ::2, :]).astype(np.uint8)
 
 def normalize(img):
     """
@@ -87,22 +90,32 @@ class BasicGridworldQnet(BaseReplayQnet):
         :return:
         """
         initializer = tf.contrib.layers.xavier_initializer
-        conv1 = tf.layers.conv2d(self.state_input, 8, (4, 4), (3, 3),
+        conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        print(conv1)
-        conv2 = tf.layers.conv2d(conv1, 16, (3, 3), (2, 2),
+        print('conv1', conv1)
+        conv2 = tf.layers.conv2d(conv1, 32, (3, 3), (2, 2),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
-        print(conv2)
-        hidden = tf.layers.dense(tf.layers.flatten(conv2), 64,
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
-        print(hidden)
-        return tf.layers.dense(hidden, self.n_actions,
+        print('conv2', conv2)
+        hidden1 = tf.layers.dense(tf.layers.flatten(conv2), 128,
+                                  activation=tf.nn.relu,
+                                  kernel_initializer=initializer(),
+                                  bias_initializer=initializer())
+        print('hidden1', hidden1)
+        hidden2 = tf.layers.dense(hidden1, 64,
+                                  activation=tf.nn.relu,
+                                  kernel_initializer=initializer(),
+                                  bias_initializer=initializer())
+        print('hidden2', hidden2)
+        hidden3 = tf.layers.dense(hidden2, 32,
+                                  activation=tf.nn.relu,
+                                  kernel_initializer=initializer(),
+                                  bias_initializer=initializer())
+        print('hidden3', hidden3)
+        return tf.layers.dense(hidden3, self.n_actions,
                                kernel_initializer=initializer(),
                                bias_initializer=initializer())
 
@@ -219,13 +232,13 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
     exp_buf_capacity = qnet.exp_buf_capacity()
     turn_str =\
         ' turn=' + str(exp_buf_size) if exp_buf_size < exp_buf_capacity else ''
-    e_str = ' e=' + ('' if e < args.e_f else '{:0.2f}'.format(e))
+    e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
           ' episode=', episode+1,
           ' reward_last_' + str(args.output_period) + '_games=',
-          int(sum(rewards[-args.output_period:])), turn_str, e_str,
+          int(sum(rewards[-args.output_period:])), e_str, turn_str,
           sep='')
 
     # save the model
@@ -241,7 +254,7 @@ def get_qnet(args, scope=''):
         return BasicGridworldQnet(
             input_shape = (25, 25, 3), n_actions=4,
             batch_size=args.batch_size,
-            optimizer=tf.train.AdamOptimizer(),
+            optimizer=tf.train.AdamOptimizer(learning_rate=args.learn_rate),
             exp_buf_capacity=args.exp_capacity)
 
 
