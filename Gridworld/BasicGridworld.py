@@ -16,13 +16,13 @@ import tensorflow as tf
 import numpy as np
 import os, argparse, sys, time
 
-from Gridworld import Gridworld
 
 parent_dir = os.path.dirname(sys.path[0])
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
 from utils.ExperienceBuffer import ExpBuf
 from utils.BaseReplayQnet import  BaseReplayQnet
+from Gridworld import Gridworld
 
 parser = argparse.ArgumentParser()
 
@@ -37,12 +37,12 @@ parser.add_argument(
     help='Number of updatews to linearly anneal from eps_i to eps_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
-    default=os.path.join('..', 'models', 'Breakout'),
+    default=os.path.join('..', 'models', 'Gridworld'),
     help='Folder to save checkpoints to.')
 parser.add_argument('--ckpt_path', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
-    '--exp_capacity', type=int, default=int(3e5),
+    '--exp_capacity', type=int, default=int(1e6),
     help='Number of past experiences to hold for replay. (300k ~ 10GB)')
 parser.add_argument(
     '--begin_updates', type=int, default=int(1e5),
@@ -219,7 +219,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
     exp_buf_capacity = qnet.exp_buf_capacity()
     turn_str =\
         ' turn=' + str(exp_buf_size) if exp_buf_size < exp_buf_capacity else ''
-    e_str = '' if e < args.e_f else '{:0.2f}'.format(e)
+    e_str = ' e=' + ('' if e < args.e_f else '{:0.2f}'.format(e))
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
@@ -293,7 +293,7 @@ def show_game(args):
             time.sleep(.25)
             action = qnet.predict(sess, normalize(np.array([state])))[0]
 
-            img, r, done, _ = env.step(action + 1) # 0 and 1 don't do anything
+            img, r, done, _ = env.step(action) # 0 and 1 don't do anything
             _ = env.render()
             state = preprocess_img(img)
 
@@ -301,6 +301,7 @@ def main():
     args = parser.parse_args(sys.argv[1:])
     if args.mode == 'show':
         assert args.ckpt_path != '', 'Must provide a checkpoint to show.'
+        args.exp_capacity = 0
         show_game(args)
     elif args.mode == 'train':
         train(args)
