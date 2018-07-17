@@ -60,7 +60,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
         # The network is then updated based on backpropogating this value.
         self.loss, self.train_op = self.make_train_op(optimizer)
 
-    def create_inputs(self, input_shape):
+    def create_inputs(self):
       """
       Create tensors to take batches of inputs
       - state = 4 (105, 80) images stacked together.
@@ -68,7 +68,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
       - target_vals = "true" Q value for calculating loss.
       """
       state_shape = [None]
-      for i in input_shape:
+      for i in self.input_shape:
           state_shape.append(i)
       self.state_input = tf.placeholder(shape=state_shape, dtype=tf.float32)
 

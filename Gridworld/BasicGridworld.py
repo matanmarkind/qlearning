@@ -54,7 +54,7 @@ parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
 parser.add_argument(
-    '--learn_rate', type=float, default=1e-3,
+    '--learning_rate', type=float, default=1e-3,
     help="learning rate for the network. passed to the optimizer.")
 
 def preprocess_img(img):
@@ -161,9 +161,9 @@ class BasicGridworldQnet(BaseReplayQnet):
         # compute the error for feedback. Then backpropogate the loss so that
         # the network can update.
         _ = sess.run(self.train_op,
-                        feed_dict={
+                     feed_dict={
                          self.state_input: states,
-                         self.taken_actions_input: actions,
+                         self.action_input: actions,
                          self.target_vals_input: target_vals})
 
 def play_episode(args, sess, env, qnet, e):
@@ -254,7 +254,7 @@ def get_qnet(args, scope=''):
         return BasicGridworldQnet(
             input_shape = (25, 25, 3), n_actions=4,
             batch_size=args.batch_size,
-            optimizer=tf.train.AdamOptimizer(learning_rate=args.learn_rate),
+            optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
             exp_buf_capacity=args.exp_capacity)
 
 
