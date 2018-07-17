@@ -10,8 +10,6 @@ And the gaps were filled based on the implementation in
 https://github.com/boyuanf/DeepQLearning/blob/master/deep_q_learning.py
 """
 
-from BaseReplayQnet import  BaseReplayQnet
-from ExperienceBuffer import ExpBuf
 from datetime import datetime
 from resource import getrusage, RUSAGE_SELF
 
@@ -19,6 +17,12 @@ import tensorflow as tf
 import numpy as np
 
 import gym, os, argparse, sys, time
+
+parent_dir = os.path.dirname(sys.path[0])
+if parent_dir not in sys.path:
+    sys.path.insert(1, parent_dir)
+from utils.ExperienceBuffer import ExpBuf
+from utils.BaseReplayQnet import  BaseReplayQnet
 
 parser = argparse.ArgumentParser()
 
@@ -87,18 +91,22 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         :return:
         """
         initializer = tf.contrib.layers.xavier_initializer
+        print('state_input', self.state_input)
         conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
+        print('conv1', conv1)
         conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
+        print('conv2', conv2)
         hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
                                  activation=tf.nn.relu,
                                  kernel_initializer=initializer(),
                                  bias_initializer=initializer())
+        print('hidden', hidden)
         return tf.layers.dense(hidden, self.n_actions,
                                kernel_initializer=initializer(),
                                bias_initializer=initializer())
