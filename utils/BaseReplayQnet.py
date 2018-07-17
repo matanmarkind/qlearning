@@ -39,11 +39,8 @@ class BaseReplayQnet(metaclass=ABCMeta):
         self.discount = discount
         self.exp_buf = exp_buf(exp_buf_capacity)
 
-        # Create a tensor to take batches of inputs
-        shape = [None]
-        for i in input_shape:
-            shape.append(i)
-        self.state_input = tf.placeholder(shape = shape, dtype=tf.float32)
+        # Create tensors to take batches of inputs
+        self.create_inputs()
 
         # Create the NN used to predict the value of each action for a given
         # state. Called main_net since this network is the main focus of what
@@ -56,12 +53,28 @@ class BaseReplayQnet(metaclass=ABCMeta):
         self.prediction = tf.argmax(self.main_net, 1)
 
         # When an experience is replayed we calculate the predicted value of
-        # retaking an action in a past state (state_input, taken_actions_input).
+        # retaking an action in a past state (state_input, action_input).
         # The loss is then based on comparing this value to some "true" value
         # of having retaken that same action in the past state.
         #
         # The network is then updated based on backpropogating this value.
         self.loss, self.train_op = self.make_train_op(optimizer)
+
+    def create_inputs(self, input_shape):
+      """
+      Create tensors to take batches of inputs
+      - state = 4 (105, 80) images stacked together.
+      - action = used to replay an action taken before.
+      - target_vals = "true" Q value for calculating loss.
+      """
+      state_shape = [None]
+      for i in input_shape:
+          state_shape.append(i)
+      self.state_input = tf.placeholder(shape=state_shape, dtype=tf.float32)
+
+      self.action_input = tf.placeholder(shape=(None), dtype=tf.int32)
+
+      self.target_vals_input = tf.placeholder(shape=(None), dtype=tf.float32)
 
     def make_nn(self, scope: str):
         """
@@ -92,7 +105,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
         the same, target_vals. By comparing the 2 we can calculate the loss
         and use that the learn.
 
-        - taken_actions_input - action taken by the network the first time
+        - action_input - action taken by the network the first time
           this state was encountered. From exp_buf. tf.placeholder.
         - target_vals_input - "true" value of a given state. This is used
           as the expected value for calculating the error/loss of the model.
@@ -108,17 +121,10 @@ class BaseReplayQnet(metaclass=ABCMeta):
             # Create a one hot encoding of the actions taken when this state was
             # first experienced. Used to isolate the current Q value for the
             # action previously taken.
-            self.taken_actions_input = tf.placeholder(shape=(None),
-                                                      dtype=tf.int32)
-            actions_onehot = tf.one_hot(self.taken_actions_input,
+            actions_onehot = tf.one_hot(self.action_input,
                                         self.n_actions,
                                         dtype=tf.float32)
             pred_vals = tf.reduce_sum(self.main_net * actions_onehot, axis=1)
-
-            # the "true" Q value.
-            self.target_vals_input = tf.placeholder(shape=(None),
-                                                    dtype=tf.float32)
-
 
             # Calculate the loss as a function of the target_val versus the
             # predicted value.
