@@ -158,6 +158,8 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                          self.taken_actions_input: actions,
                          self.target_vals_input: target_vals})
 
+        # TODO: for weighted, calculate loss here for reweighting
+
 def play_episode(args, sess, env, qnet, e):
     """
     Actually plays a single game and performs updates once we have enough
