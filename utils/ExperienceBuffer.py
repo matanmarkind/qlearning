@@ -135,7 +135,9 @@ class WeightedExpBuf():
           ids.append(self.unplayed_experiences.pop())
           batch_size -= 1
 
-        ids += self.experiences.sample(batch_size)
+        # sample the from the weighted buffer, but make sure to exclude the ids
+        # we give from the unplayed set.
+        ids += self.experiences.sample(batch_size, exclude=ids)
         state, action, reward, next_state, not_terminal = [], [], [], [], []
         for exp in self.experiences[ids]:
             state.append(exp.state)

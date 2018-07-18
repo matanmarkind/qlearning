@@ -143,15 +143,18 @@ class WeightedRingBuf():
             self.tree[depth][idx] += delta
             idx //= 2
 
-    def sample(self, num):
+    def sample(self, num, exclude=[]):
         """
         Sample a number of unique experiences. The uniqueness criteria shouldn't
         cause too much change in the effective weights since we are assuming the
         batch_size is much smaller than the experience buffer.
         :param num: how many experiences to sample.
+        :param exclude: excluce certain elements
         Returns a unique set of indices for the leaves in the tree.
         """
         idxs = set()
         while len(idxs) < num:
-            idxs.add(self.get_leaf())
+            leaf = self.get_leaf()
+            if leaf not in exclude:
+                idxs.add(leaf)
         return list(idxs)
