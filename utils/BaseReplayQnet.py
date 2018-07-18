@@ -1,8 +1,12 @@
 from abc import ABCMeta, abstractmethod
 import tensorflow as tf
 import numpy as np
+import os, sys
 
-from .ExperienceBuffer import ExpBuf
+parent_dir = os.path.dirname(os.getcwd())
+if parent_dir not in sys.path:
+    sys.path.insert(1, parent_dir)
+from utils.ExperienceBuffer import ExpBuf
 
 class BaseReplayQnet(metaclass=ABCMeta):
     """

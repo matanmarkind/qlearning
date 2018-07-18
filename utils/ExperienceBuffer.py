@@ -1,7 +1,11 @@
 from collections import deque
 import numpy as np
+import sys, os
 
-from .RingBuffer import RingBuf, WeightedRingBuf
+parent_dir = os.path.dirname(os.getcwd())
+if parent_dir not in sys.path:
+    sys.path.insert(1, parent_dir)
+from utils.RingBuffer import RingBuf, WeightedRingBuf
 
 class ExpBuf():
     class Experience():
@@ -30,8 +34,9 @@ class ExpBuf():
         :param is_terminal: did the game finish
         :return: index of element, element overwritten
         """
-        idx, old_ele = self.experiences.append(self.Experience(
-            state, action, reward, next_state, not is_terminal))
+        exp = self.Experience(
+            state, action, reward, next_state, not is_terminal)
+        idx, old_ele = self.experiences.append(exp)
         return idx, old_ele
 
 
