@@ -16,8 +16,8 @@ class BaseReplayQnet(metaclass=ABCMeta):
 
     Designed for tensorflow.
     """
-    def __init__(self, input_shape, n_actions, batch_size,
-                 optimizer, exp_buf_capacity, exp_buf = ExpBuf, discount = .99):
+    def __init__(self, input_shape, n_actions, batch_size, optimizer, exp_buf,
+                 discount):
         """
         Initializes the base with the values we expect all Qnet's will want. To
         save some boilerplate later on.
@@ -25,8 +25,6 @@ class BaseReplayQnet(metaclass=ABCMeta):
         input to the NN.
         :param n_actions:
         :param batch_size:
-        :param exp_buf_capacity: Number of old states to hold onto for experience
-        replay.
         :param exp_buf: Which experience buffer to use. Must provide the
         following interface:
         - Constructor(capacity)
@@ -41,7 +39,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
         self.n_actions = n_actions
         self.batch_size = batch_size
         self.discount = discount
-        self.exp_buf = exp_buf(exp_buf_capacity)
+        self.exp_buf = exp_buf
 
         # Create tensors to take batches of inputs
         self.create_inputs()
