@@ -3,7 +3,7 @@ import tensorflow as tf
 import numpy as np
 import os, sys
 
-parent_dir = os.path.dirname(os.getcwd())
+parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
 from utils.ExperienceBuffer import ExpBuf
