@@ -20,7 +20,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
 from utils.ExperienceBuffer import ExpBuf
-from utils.BaseReplayQnet import  BaseReplayQnet
+from utils.BaseReplayQnet import BaseReplayQnet
 from Gridworld import Gridworld
 
 parser = argparse.ArgumentParser()
@@ -57,11 +57,12 @@ parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
 parser.add_argument(
-    '--learning_rate', type=float, default=1e-3,
+    '--learning_rate', type=float, default=1e-4,
     help="learning rate for the network. passed to the optimizer.")
 parser.add_argument(
-    'future_discount', type=float, default=.99,
+    '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
+
 
 def preprocess_img(img):
     """
@@ -262,9 +263,7 @@ def get_qnet(args, scope=''):
             input_shape = (25, 25, 3), n_actions=4,
             batch_size=args.batch_size,
             optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
-            exp_buf_capacity=args.exp_capacity,
-            discount=args.future_discount)
-
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
 
 def train(args):
@@ -303,7 +302,6 @@ def show_game(args):
     tf.reset_default_graph()
     qnet = get_qnet(args)
 
-    init = tf.global_variables_initializer()
     saver = tf.train.Saver()
     tf.get_default_graph().finalize()
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
