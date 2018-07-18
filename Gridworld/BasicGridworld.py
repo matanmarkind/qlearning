@@ -46,7 +46,7 @@ parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
     '--exp_capacity', type=int, default=int(1e6),
-    help='Number of past experiences to hold for replay. (300k ~ 10GB)')
+    help='Number of past experiences to hold for replay.')
 parser.add_argument(
     '--begin_updates', type=int, default=int(1e5),
     help='Number of experiences before begin to training begins.')
