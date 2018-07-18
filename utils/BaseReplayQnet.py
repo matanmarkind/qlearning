@@ -121,8 +121,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
             # Create a one hot encoding of the actions taken when this state was
             # first experienced. Used to isolate the current Q value for the
             # action previously taken.
-            actions_onehot = tf.one_hot(self.action_input,
-                                        self.n_actions,
+            actions_onehot = tf.one_hot(self.action_input, self.n_actions,
                                         dtype=tf.float32)
             pred_vals = tf.reduce_sum(self.main_net * actions_onehot, axis=1)
 
