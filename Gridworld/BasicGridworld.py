@@ -17,7 +17,7 @@ import numpy as np
 import os, argparse, sys, time
 
 
-parent_dir = os.path.dirname(sys.path[0])
+parent_dir = os.path.dirname(os.getcwd())
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
 from utils.ExperienceBuffer import ExpBuf
@@ -28,6 +28,12 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, default='show',
                     help='train, show')
+# TODO: consider having a 2 step anneal. Here we stop at 10% but that may
+# make long terms planning hard for the network since the further into
+# the future we go, the more likely its planning is to get messed up
+# by a forced random action. Perhaps do 100% -> 10% over X steps, then
+# hold random action at 10% for X steps, then anneal from 10% -> 1%
+# over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
 parser.add_argument('--e_f', type=float, default=.1,
@@ -308,6 +314,7 @@ def show_game(args):
         done = False
         state = preprocess_img(env.reset())
         _ = env.render()
+        reward, turns = 0, 0
 
         while not done:
             time.sleep(.25)
@@ -316,6 +323,9 @@ def show_game(args):
             img, r, done, _ = env.step(action) # 0 and 1 don't do anything
             _ = env.render()
             state = preprocess_img(img)
+            reward += r
+            turns += 1
+    print('turns =', turns, ' reward =', reward, ' reward/turn =', reward/turns)
 
 def main():
     args = parser.parse_args(sys.argv[1:])
