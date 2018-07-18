@@ -26,8 +26,7 @@ from Gridworld import Gridworld
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--mode', type=str, default='show',
-                    help='train, show')
+parser.add_argument('--mode', type=str, help='train, show')
 # TODO: consider having a 2 step anneal. Here we stop at 10% but that may
 # make long terms planning hard for the network since the further into
 # the future we go, the more likely its planning is to get messed up
@@ -43,9 +42,8 @@ parser.add_argument(
     help='Number of updates to linearly anneal from e_i to e_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
-    default=os.path.join('..', 'models', 'Gridworld'),
     help='Folder to save checkpoints to.')
-parser.add_argument('--ckpt_path', type=str,
+parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
     '--exp_capacity', type=int, default=int(1e6),
@@ -310,7 +308,7 @@ def show_game(args):
     saver = tf.train.Saver()
     tf.get_default_graph().finalize()
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
-        saver.restore(sess, args.ckpt_path)
+        saver.restore(sess, args.restore_ckpt)
         done = False
         state = preprocess_img(env.reset())
         _ = env.render()
@@ -330,11 +328,15 @@ def show_game(args):
 def main():
     args = parser.parse_args(sys.argv[1:])
     if args.mode == 'show':
-        assert args.ckpt_path != '', 'Must provide a checkpoint to show.'
+        assert args.restore_ckpt != '', 'Must provide a checkpoint to show.'
         args.exp_capacity = 0
         show_game(args)
     elif args.mode == 'train':
+        assert args.ckpt_dir != '', \
+            'Must provide a directory to save checkpoints to.'
         train(args)
+    else:
+        assert False, "Must provide a mode to run in: train, show."
 
 if __name__ == '__main__':
     main()
