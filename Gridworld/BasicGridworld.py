@@ -59,6 +59,9 @@ parser.add_argument(
 parser.add_argument(
     '--learning_rate', type=float, default=1e-3,
     help="learning rate for the network. passed to the optimizer.")
+parser.add_argument(
+    'future_discount', type=float, default=.99,
+    help="Rate at which to discount future rewards.")
 
 def preprocess_img(img):
     """
@@ -68,22 +71,22 @@ def preprocess_img(img):
     """
     return (img[::2, ::2, :]).astype(np.uint8)
 
-def normalize(img):
+def normalize(imgs):
     """
-    :param states: downsampled gridworld image
+    :param imgs: downsampled gridworld image
     :return: normalized img with values on [-1, 1)
     """
-    return img.astype(np.float32) / 128. - 1
+    return imgs.astype(np.float32) / 128. - 1
 
 class BasicGridworldQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
-    def __init__(self, input_shape, n_actions, batch_size,
-                 optimizer, exp_buf_capacity, discount = .99):
+    def __init__(self, input_shape, n_actions, batch_size, optimizer,
+                 exp_buf_capacity, discount):
         BaseReplayQnet.__init__(
-            self, input_shape, n_actions, batch_size, optimizer, exp_buf_capacity,
-            ExpBuf, discount)
+            self, input_shape, n_actions, batch_size, optimizer,
+            ExpBuf(exp_buf_capacity), discount)
 
     def make_nn_impl(self):
         """
@@ -172,8 +175,6 @@ class BasicGridworldQnet(BaseReplayQnet):
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
 
-        # TODO: for weighted, calculate loss here for reweighting
-
 def play_episode(args, sess, env, qnet, e):
     """
     Actually plays a single game and performs updates once we have enough
@@ -237,8 +238,6 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards, turns):
         return
 
     # Print info about the state of the network
-    exp_buf_size = qnet.exp_buf_size()
-    exp_buf_capacity = qnet.exp_buf_capacity()
     turn_str =' turn=' + str(turns)
     e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
@@ -263,7 +262,8 @@ def get_qnet(args, scope=''):
             input_shape = (25, 25, 3), n_actions=4,
             batch_size=args.batch_size,
             optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
-            exp_buf_capacity=args.exp_capacity)
+            exp_buf_capacity=args.exp_capacity,
+            discount=args.future_discount)
 
 
 
