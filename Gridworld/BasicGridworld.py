@@ -34,7 +34,7 @@ parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
     '--e_anneal', type=int, default=int(1e6),
-    help='Number of updatews to linearly anneal from eps_i to eps_f.')
+    help='Number of updates to linearly anneal from e_i to e_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
     default=os.path.join('..', 'models', 'Gridworld'),
@@ -127,7 +127,9 @@ class BasicGridworldQnet(BaseReplayQnet):
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
         """
-        return tf.reduce_mean(tf.square(expected - actual))
+        return tf.losses.mean_squared_error(
+            labels=expected, predictions=actual,
+            reduction=tf.losses.Reduction.NONE)
 
     def update(self, sess):
         """
@@ -149,7 +151,7 @@ class BasicGridworldQnet(BaseReplayQnet):
         # value of the action we would take for each next_state.
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
-        nextQ = fullQ[:, next_actions]
+        nextQ = fullQ[range(self.batch_size), next_actions]
 
         # Discounted future value:
         # trueQ = r + discount * Q(next_state, next_action)
@@ -160,11 +162,14 @@ class BasicGridworldQnet(BaseReplayQnet):
         # compare that the the expected value just calculated. This is used to
         # compute the error for feedback. Then backpropogate the loss so that
         # the network can update.
+
         _ = sess.run(self.train_op,
                      feed_dict={
                          self.state_input: states,
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
+
+        # TODO: for weighted, calculate loss here for reweighting
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -207,9 +212,9 @@ def play_episode(args, sess, env, qnet, e):
         reward += r
         turn += 1
 
-    return reward, e
+    return reward, e, turn
 
-def maybe_output(args, sess, saver, qnet, episode, e, rewards):
+def maybe_output(args, sess, saver, qnet, episode, e, rewards, turns):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
@@ -221,6 +226,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
     :param episode: Episode number
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
+    :param turns: total number of turns played in training.
     :return:
     """
 
@@ -230,8 +236,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
     # Print info about the state of the network
     exp_buf_size = qnet.exp_buf_size()
     exp_buf_capacity = qnet.exp_buf_capacity()
-    turn_str =\
-        ' turn=' + str(exp_buf_size) if exp_buf_size < exp_buf_capacity else ''
+    turn_str =' turn=' + str(turns)
     e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
@@ -267,8 +272,8 @@ def train(args):
     :param args: parser.parse_args
     :return:
     """
-    env = Gridworld(5, 5)
     tf.reset_default_graph()
+    env = Gridworld(5, 5)
     qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
@@ -280,13 +285,15 @@ def train(args):
         e = args.e_i
         episode = 0
         rewards = []
+        turns = 0
 
         while True:
-            r, e = play_episode(args, sess, env, qnet, e)
+            r, e, t = play_episode(args, sess, env, qnet, e)
+            turns += t
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, qnet, episode, e, rewards)
+            maybe_output(args, sess, saver, qnet, episode, e, rewards, turns)
 
 def show_game(args):
     env = Gridworld(5, 5)
