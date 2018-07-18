@@ -18,28 +18,32 @@ import numpy as np
 
 import gym, os, argparse, sys, time
 
-parent_dir = os.path.dirname(sys.path[0])
+parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
 from utils.ExperienceBuffer import ExpBuf
-from utils.BaseReplayQnet import  BaseReplayQnet
+from utils.BaseReplayQnet import BaseReplayQnet
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--mode', type=str, default='show',
-                    help='train, show')
+parser.add_argument('--mode', type=str, help='train, show')
+# TODO: consider having a 2 step anneal. Here we stop at 10% but that may
+# make long terms planning hard for the network since the further into
+# the future we go, the more likely its planning is to get messed up
+# by a forced random action. Perhaps do 100% -> 10% over X steps, then
+# hold random action at 10% for X steps, then anneal from 10% -> 1%
+# over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
 parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
     '--e_anneal', type=int, default=int(1e6),
-    help='Number of updatews to linearly anneal from eps_i to eps_f.')
+    help='Number of updates to linearly anneal from e_i to e_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
-    default=os.path.join('..', 'models', 'Breakout'),
     help='Folder to save checkpoints to.')
-parser.add_argument('--ckpt_path', type=str,
+parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
     '--exp_capacity', type=int, default=int(3e5),
@@ -53,6 +57,13 @@ parser.add_argument(
 parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
+parser.add_argument(
+    '--learning_rate', type=float, default=1e-3,
+    help="learning rate for the network. passed to the optimizer.")
+parser.add_argument(
+    '--future_discount', type=float, default=0.99,
+    help="Rate at which to discount future rewards.")
+
 
 def preprocess_img(img):
     """
@@ -69,19 +80,19 @@ def normalize(states):
     """
 
     :param states: numpy array of states
-    :return:
+    :return: normalized img with values on [-1, 1)
     """
-    return states.astype(np.float32) / 255.
+    return states.astype(np.float32) / 128. - 1
 
 class DeepmindBreakoutQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
-    def __init__(self, input_shape, n_actions, batch_size,
-                 optimizer, exp_buf_capacity, discount = .99):
+    def __init__(self, input_shape, n_actions, batch_size, optimizer,
+                 exp_buf_capacity, discount):
         BaseReplayQnet.__init__(
-            self, input_shape, n_actions, batch_size, optimizer, exp_buf_capacity,
-            ExpBuf, discount)
+            self, input_shape, n_actions, batch_size, optimizer,
+            ExpBuf(exp_buf_capacity), discount)
 
     def make_nn_impl(self):
         """
@@ -119,7 +130,9 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
         """
-        return tf.reduce_mean(tf.square(expected - actual))
+        return tf.losses.mean_squared_error(
+            labels=expected, predictions=actual,
+            reduction=tf.losses.Reduction.NONE)
 
     def update(self, sess):
         """
@@ -141,7 +154,7 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         # value of the action we would take for each next_state.
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
-        nextQ = fullQ[:, next_actions]
+        nextQ = fullQ[range(self.batch_size), next_actions]
 
         # Discounted future value:
         # trueQ = r + discount * Q(next_state, next_action)
@@ -152,10 +165,11 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
         # compare that the the expected value just calculated. This is used to
         # compute the error for feedback. Then backpropogate the loss so that
         # the network can update.
+
         _ = sess.run(self.train_op,
-                        feed_dict={
+                     feed_dict={
                          self.state_input: states,
-                         self.taken_actions_input: actions,
+                         self.action_input: actions,
                          self.target_vals_input: target_vals})
 
 def play_episode(args, sess, env, qnet, e):
@@ -175,34 +189,37 @@ def play_episode(args, sess, env, qnet, e):
     reward = 0  # total reward for this episode
     turn = 0
 
-
     while not done:
         action = qnet.predict(sess, normalize(np.array([state])))[0]
         if np.random.rand(1) < e:
             action = qnet.rand_action()
 
-        img, r, done, _ = env.step(action + 1) # 0 & 1 don't do anything
+        img, r, done, _ = env.step(action + 1) # {1, 2, 3}
         img = np.reshape(preprocess_img(img), (105, 80, 1))
         next_state = np.concatenate((state[:, :, :3], img), axis=2)
         # TODO: r += info['ale.lives'] - old_lives??
         # Feels weird to clip the reward, but comes from Deepmind paper...
         qnet.add_experience(state, action, np.clip(r, -1, 1), next_state, done)
 
-        if turn % (qnet.batch_size // 8) == 0 and qnet.exp_buf_size() > args.begin_updates:
+        if qnet.exp_buf_size() > args.begin_updates:
             # Once we have enough experiences in the buffer we can
-            # start learning. We want to use each experience on average 8 times
-            # so that is why for a batch size of 8 we would update every turn.
-            qnet.update(sess)
+            # start learning.
+            if turn % (qnet.batch_size // 8) == 0:
+                # We want to use each experience on average 8 times so
+                # that's why for a batch size of 8 we would update every turn.
+                qnet.update(sess)
             if e > args.e_f:
+                # Reduce once for every update on 8 states. This makes e
+                # not dependent on the batch_size.
                 e -= (args.e_i - args.e_f) / args.e_anneal
 
         state = next_state
         reward += r
         turn += 1
 
-    return reward, e
+    return reward, e, turn
 
-def maybe_output(args, sess, saver, qnet, episode, e, rewards):
+def maybe_output(args, sess, saver, qnet, episode, e, rewards, turn):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
@@ -221,22 +238,30 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
         return
 
     # Print info about the state of the network
-    exp_buf_size = qnet.exp_buf_size()
-    exp_buf_capacity = qnet.exp_buf_capacity()
-    turn_str =\
-        ' turn=' + str(exp_buf_size) if exp_buf_size < exp_buf_capacity else ''
-    e_str = '' if e < args.e_f else '{:0.2f}'.format(e)
+    turn_str =' turn=' + str(turn)
+    e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
           ' episode=', episode+1,
           ' reward_last_' + str(args.output_period) + '_games=',
-          int(sum(rewards[-args.output_period:])), turn_str, e_str,
+          int(sum(rewards[-args.output_period:])), e_str, turn_str,
           sep='')
 
     # save the model
-    model_name = 'model-deepmind-' + str(episode+1) + '.ckpt'
+    model_name = 'model-DeepmindBreakout-' + str(episode+1) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
+
+def get_qnet(args, scope=''):
+    """
+    Wrapper for getting the Gridworld network so don't have to copy and paste
+    the same params each time.
+    """
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return DeepmindBreakoutQnet(
+            input_shape = (105, 80, 4), n_actions=3, batch_size=args.batch_size,
+            optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
 def train(args):
     """
@@ -248,10 +273,7 @@ def train(args):
     """
     env = gym.make('BreakoutDeterministic-v4')
     tf.reset_default_graph()
-    qnet = DeepmindBreakoutQnet(
-        input_shape = (105, 80, 4), n_actions=3, batch_size=args.batch_size,
-        optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-        exp_buf_capacity=args.exp_capacity)
+    qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
     saver = tf.train.Saver()
@@ -262,49 +284,57 @@ def train(args):
         e = args.e_i
         episode = 0
         rewards = []
+        turn = 0
 
         while True:
-            r, e = play_episode(args, sess, env, qnet, e)
+            r, e, t = play_episode(args, sess, env, qnet, e)
+            turn += t
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, qnet, episode, e, rewards)
+            maybe_output(args, sess, saver, qnet, episode, e, rewards, turn)
 
 def show_game(args):
     env = gym.make('BreakoutDeterministic-v4')
     tf.reset_default_graph()
-    qnet = DeepmindBreakoutQnet(
-        input_shape = (105, 80, 4), n_actions=3, batch_size=args.batch_size,
-        optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-        exp_buf_capacity=args.exp_capacity)
+    qnet = get_qnet(args)
 
-
-    init = tf.global_variables_initializer()
     saver = tf.train.Saver()
     tf.get_default_graph().finalize()
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
-        saver.restore(sess, args.ckpt_path)
+        saver.restore(sess, args.restore_ckpt)
         done = False
         img = preprocess_img(env.reset())
         _ = env.render()
         state = np.stack((img, img, img, img), axis=2)
+        reward, turns = 0, 0
 
         while not done:
             time.sleep(.25)
             action = qnet.predict(sess, normalize(np.array([state])))[0]
 
-            img, r, done, _ = env.step(action + 1) # 0 and 1 don't do anything
+            img, r, done, _ = env.step(action + 1) # {1, 2, 3}
             _ = env.render()
             img = np.reshape(preprocess_img(img), (105, 80, 1))
             state = np.concatenate((state[:, :, :3], img), axis=2)
+            reward += r
+            turns += 1
+
+    print('turns =', turns, ' reward =', reward)
 
 def main():
     args = parser.parse_args(sys.argv[1:])
     if args.mode == 'show':
-        assert args.ckpt_path != '', 'Must provide a checkpoint to show.'
+        assert args.restore_ckpt != '', 'Must provide a checkpoint to show.'
+        args.exp_capacity = 0
         show_game(args)
     elif args.mode == 'train':
+        assert args.ckpt_dir != '', \
+            'Must provide a directory to save checkpoints to.'
         train(args)
+    else:
+        assert False, "Must provide a mode to run in: train, show."
 
 if __name__ == '__main__':
     main()
+
