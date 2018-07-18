@@ -32,7 +32,7 @@ class RingBuf:
         old_ele = self.data[idx]
         self.data[idx] = element
         self.index += 1
-        return old_ele
+        return idx, old_ele
 
     def sample(self, num):
         """
@@ -65,7 +65,6 @@ class WeightedRingBuf():
 
     def __init__(self, capacity):
         self.capacity = capacity
-        self.index = 0
         self.tree = self.make_tree(capacity)
 
     def __getitem__(self, idx):
@@ -85,15 +84,14 @@ class WeightedRingBuf():
         """
         weight = ele.weight
         ele.weight = 0
-        old_ele = self.tree[-1].append(ele)
+        idx, old_ele = self.tree[-1].append(ele)
         old_weight = 0 if old_ele is None else old_ele.weight
         
-        self._update_weight(self.index % self.capacity, weight - old_weight)
+        self._update_weight(idx, weight - old_weight)
         # Must reset ele.weight since now it is (weight - old_weight)
         ele.weight = weight
         
-        self.index += 1
-        return old_ele
+        return idx, old_ele
 
     def make_tree(self, capacity):
         """

@@ -1,5 +1,7 @@
-from .RingBuffer import RingBuf, WeightedRingBuf
+from collections import deque
 import numpy as np
+
+from .RingBuffer import RingBuf, WeightedRingBuf
 
 class ExpBuf():
     class Experience():
@@ -26,10 +28,12 @@ class ExpBuf():
         :param reward: reward received for action
         :param next_state: preprocessed state that resulted from the action
         :param is_terminal: did the game finish
-        :return:
+        :return: index of element, element overwritten
         """
-        self.experiences.append(self.Experience(
+        idx, old_ele = self.experiences.append(self.Experience(
             state, action, reward, next_state, not is_terminal))
+        return idx, old_ele
+
 
     def sample(self, num):
         """
@@ -79,27 +83,36 @@ class WeightedExpBuf():
         determine the probability of selecting a given leaf.
         """
         self.experiences = WeightedRingBuf(capacity)
+        # ids of experiences that haven't been used for training yet.
+        self.unplayed_experiences = deque(maxlen=capacity)
 
-    def append(self, state, action, reward, next_state, is_terminal):
+    def append(self, state, action, reward, next_state, is_terminal, weight=0):
         """
         Takes in an experience that a network had for later replay. Initially
-        each experience has a loss of 0, since we haven't trained on it yet,
-        merely encountered it.
+        each experience has a loss of 0 (unless given), since we haven't trained
+        on it yet, merely encountered it. This is a trash value and expects
+        to be updated when the experience is first replayed.
 
         :param state: preprocessed image group
         :param action: action taken when first encountered state
         :param reward: reward received for action
         :param next_state: preprocessed state that resulted from the action
         :param is_terminal: did the game finish
-        :return:
+        :param weight: how much to weight the experience.
+        :return: index of the appended element, element overwritten
         """
-        self.experiences.append(self.Experience(
-            state, action, reward, next_state, not is_terminal, 0))
+        idx, old_ele = self.experiences.append(self.Experience(
+            state, action, reward, next_state, not is_terminal, weight))
+        self.unplayed_experiences.append(idx)
+        return idx, old_ele
 
-    def sample(self, num):
+    def sample(self, batch_size):
         """
-        Randomly sample a set of unique experiences from the buffer.
-        :param num: Number of elements to sample.
+        Select up to batch_size elements from the list of experiences
+        that have never been used to learn from. Then fill out the
+        sample from the weighted buffer by randomly sampling.
+
+        :param batch_size: Number of elements to sample.
         :return: a group of alligned vectors with the following:
             - ids: id of an experience (used to update the weights)
             - state
@@ -108,11 +121,20 @@ class WeightedExpBuf():
             - next_state (as a result of taking action in state)
             - not_terminal (did the episode continue after this state?)
         """
-        ids = self.experiences.sample(num)
+        ids = []
+        while batch_size > 0 and len(self.unplayed_experiences) > 0:
+          # Make sure to replay new experiences before sampling. This
+          # guarantees all experiences get 1 replay. It also allows
+          # us to set the weights of these experiences, since they
+          # will (probably) be weighted 0 when first appended.
+          ids.append(self.unplayed_experiences.pop())
+          batch_size -= 1
+
+        ids += self.experiences.sample(batch_size)
         state, action, reward, next_state, not_terminal = [], [], [], [], []
         for exp in self.experiences[ids]:
             state.append(exp.state)
-            # action.append(exp.action)
+            action.append(exp.action)
             reward.append(exp.reward)
             next_state.append(exp.next_state)
             not_terminal.append(exp.not_terminal)
