@@ -22,8 +22,13 @@ class Gridworld():
         LEFT = 2
         RIGHT = 3
 
-    def __init__(self, rows=5, cols=5):
+    def __init__(self, rows=5, cols=5, greens=3, reds=2):
         self.shape = (rows, cols)
+        self.greens = greens
+        self.reds = reds
+        assert (greens + reds) < (rows * cols), \
+            "Grid not large enough: shape={}, greens={}, reds={}.".format(
+                self.shape, greens, reds)
 
         # Needed for live image showing.
         plt.ion()
@@ -75,8 +80,8 @@ class Gridworld():
 
     def _create_grid(self, shape):
         grid = np.full(shape, self.Color.BLACK, dtype=self.Color)
-        grid = self._place_color(grid, 3, self.Color.GREEN)
-        grid = self._place_color(grid, 2, self.Color.RED)
+        grid = self._place_color(grid, self.greens, self.Color.GREEN)
+        grid = self._place_color(grid, self.reds, self.Color.RED)
         return self._place_color(grid, 1, self.Color.BLUE)
 
     def _place_color(self, grid, num, color):
