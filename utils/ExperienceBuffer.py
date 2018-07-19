@@ -132,7 +132,7 @@ class WeightedExpBuf():
           # guarantees all experiences get 1 replay. It also allows
           # us to set the weights of these experiences, since they
           # will (probably) be weighted 0 when first appended.
-          ids.add(self.unplayed_experiences.pop())
+          ids.add(self.unplayed_experiences.popleft())
 
         # sample the from the weighted buffer, but make sure to exclude the ids
         # we give from the unplayed set.
@@ -151,15 +151,17 @@ class WeightedExpBuf():
         return ids, np.asarray(state), np.asarray(action), np.asarray(reward), \
                np.asarray(next_state), np.asarray(not_terminal)
 
-    def update_weights(self, exp_ids, new_weights):
+    def update_losses(self, exp_ids, losses):
         """
-        Take a batch of (memory_id, weight) with which to update the tree.
+        Take a batch of (memory_id, loss) with which to update the tree.
+
+        Expects the loss to always be positive.
         """
         assert len(set(exp_ids)) == len(exp_ids),\
             "Invalid Argument: must pass a unique set of experience ids."
 
-        for idx, weight in zip(exp_ids, new_weights):
-            self.experiences.update_weight(idx, weight)
+        for idx, loss in zip(exp_ids, losses):
+            self.experiences.update_weight(idx, loss)
 
     @property
     def capacity(self):
