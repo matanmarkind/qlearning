@@ -126,18 +126,20 @@ class WeightedExpBuf():
             - next_state (as a result of taking action in state)
             - not_terminal (did the episode continue after this state?)
         """
-        ids = []
-        while batch_size > 0 and len(self.unplayed_experiences) > 0:
+        ids = set()
+        while len(ids) < batch_size and len(self.unplayed_experiences) > 0:
           # Make sure to replay new experiences before sampling. This
           # guarantees all experiences get 1 replay. It also allows
           # us to set the weights of these experiences, since they
           # will (probably) be weighted 0 when first appended.
-          ids.append(self.unplayed_experiences.pop())
-          batch_size -= 1
+          ids.add(self.unplayed_experiences.pop())
 
         # sample the from the weighted buffer, but make sure to exclude the ids
         # we give from the unplayed set.
-        ids += self.experiences.sample(batch_size, exclude=ids)
+        ids |= self.experiences.sample(batch_size - len(ids), exclude=ids)
+        assert len(ids) == batch_size,\
+            "Internal Error: incorrect sample size. len(ids)=" + str(len(ids))
+
         state, action, reward, next_state, not_terminal = [], [], [], [], []
         for exp in self.experiences[ids]:
             state.append(exp.state)
@@ -153,6 +155,9 @@ class WeightedExpBuf():
         """
         Take a batch of (memory_id, weight) with which to update the tree.
         """
+        assert len(set(exp_ids)) == len(exp_ids),\
+            "Invalid Argument: must pass a unique set of experience ids."
+
         for idx, weight in zip(exp_ids, new_weights):
             self.experiences.update_weight(idx, weight)
 
