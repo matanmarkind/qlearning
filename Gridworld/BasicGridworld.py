@@ -289,7 +289,7 @@ def train(args):
         rewards = []
         turns = 0
 
-        while True:
+        while episode < 20000:
             r, e, t = play_episode(args, sess, env, qnet, e)
             turns += t
             rewards.append(r)
@@ -298,7 +298,7 @@ def train(args):
             maybe_output(args, sess, saver, qnet, episode, e, rewards, turns)
 
 def show_game(args):
-    env = Gridworld(5, 5)
+    env = Gridworld(rows=5, cols=5, greens=3, reds=2)
     tf.reset_default_graph()
     qnet = get_qnet(args)
 
@@ -315,7 +315,7 @@ def show_game(args):
             time.sleep(.25)
             action = qnet.predict(sess, normalize(np.array([state])))[0]
 
-            img, r, done, _ = env.step(action) # 0 and 1 don't do anything
+            img, r, done, _ = env.step(action)
             _ = env.render()
             state = preprocess_img(img)
             reward += r
