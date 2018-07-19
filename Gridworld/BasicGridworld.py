@@ -85,10 +85,13 @@ class BasicGridworldQnet(BaseReplayQnet):
 
     def make_nn_impl(self):
         """
-        Make a NN to take in a batch of states (4 preprocessed images) with
-        an output of size 3 (stay, left, right). No activation function is
-        applied to the final output.
-        :return:
+        Make a NN to take in a batch of states (normalized downsampled image)
+        with an output of size 4 (up, down, left, right in some order). No
+        activation function is applied to the final output.
+
+        Prints out each layer since I think it's nice to see.
+
+        :return: Last layer of the NN.
         """
         initializer = tf.contrib.layers.xavier_initializer
         conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
@@ -122,8 +125,7 @@ class BasicGridworldQnet(BaseReplayQnet):
 
     def loss_fn(self, expected, actual):
         """
-        A function for calculating the loss of the neural network. Common
-        examples include RootMeanSquare or HuberLoss.
+        A function for calculating the loss of the neural network.
         :param expected: a batch of target_vals
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
@@ -163,7 +165,6 @@ class BasicGridworldQnet(BaseReplayQnet):
         # compare that the the expected value just calculated. This is used to
         # compute the error for feedback. Then backpropogate the loss so that
         # the network can update.
-
         _ = sess.run(self.train_op,
                      feed_dict={
                          self.state_input: states,

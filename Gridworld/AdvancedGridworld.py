@@ -178,7 +178,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                          self.state_input: states,
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
-        self.exp_buf.update_losses(ids, np.abs(loss))
+        self.exp_buf.update_losses(ids, loss)
 
 def play_episode(args, sess, env, qnet, e):
     """
