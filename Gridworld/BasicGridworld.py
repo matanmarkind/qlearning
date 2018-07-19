@@ -26,12 +26,6 @@ from Gridworld import Gridworld
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, help='train, show')
-# TODO: consider having a 2 step anneal. Here we stop at 10% but that may
-# make long terms planning hard for the network since the further into
-# the future we go, the more likely its planning is to get messed up
-# by a forced random action. Perhaps do 100% -> 10% over X steps, then
-# hold random action at 10% for X steps, then anneal from 10% -> 1%
-# over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
 parser.add_argument('--e_f', type=float, default=.1,
