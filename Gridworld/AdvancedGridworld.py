@@ -4,34 +4,37 @@ import tensorflow as tf
 import numpy as np
 import os, argparse, sys, time
 
-
-parent_dir = os.path.dirname(sys.path[0])
+parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
 from utils.ExperienceBuffer import WeightedExpBuf
-from utils.BaseReplayQnet import  BaseReplayQnet
+from utils.BaseReplayQnet import BaseReplayQnet
 from Gridworld import Gridworld
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--mode', type=str, default='show',
-                    help='train, show')
+parser.add_argument('--mode', type=str, help='train, show')
+# TODO: consider having a 2 step anneal. Here we stop at 10% but that may
+# make long terms planning hard for the network since the further into
+# the future we go, the more likely its planning is to get messed up
+# by a forced random action. Perhaps do 100% -> 10% over X steps, then
+# hold random action at 10% for X steps, then anneal from 10% -> 1%
+# over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
 parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
     '--e_anneal', type=int, default=int(1e6),
-    help='Number of updatews to linearly anneal from eps_i to eps_f.')
+    help='Number of updates to linearly anneal from e_i to e_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
-    default=os.path.join('..', 'models', 'Gridworld'),
     help='Folder to save checkpoints to.')
-parser.add_argument('--ckpt_path', type=str,
+parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
     '--exp_capacity', type=int, default=int(1e6),
-    help='Number of past experiences to hold for replay. (300k ~ 10GB)')
+    help='Number of past experiences to hold for replay.')
 parser.add_argument(
     '--begin_updates', type=int, default=int(1e5),
     help='Number of experiences before begin to training begins.')
@@ -42,8 +45,12 @@ parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
 parser.add_argument(
-    '--learn_rate', type=float, default=1e-3,
+    '--learning_rate', type=float, default=1e-4,
     help="learning rate for the network. passed to the optimizer.")
+parser.add_argument(
+    '--future_discount', type=float, default=0.99,
+    help="Rate at which to discount future rewards.")
+
 
 def preprocess_img(img):
     """
@@ -53,33 +60,32 @@ def preprocess_img(img):
     """
     return (img[::2, ::2, :]).astype(np.uint8)
 
-def normalize(img):
+def normalize(imgs):
     """
-    :param states: downsampled gridworld image
+    :param imgs: downsampled gridworld image
     :return: normalized img with values on [-1, 1)
     """
-    return img.astype(np.float32) / 128. - 1
+    return imgs.astype(np.float32) / 128. - 1
 
 class AdvancedGridworldQnet(BaseReplayQnet):
     """
-    Class to perform Q learning on Gridworld using some more advanced techniques.
-    - Double DQN
-    - Deuling networks
-    - priority experience replay
-    - Huber Loss
+    Class to perform basic Q learning
     """
-    def __init__(self, input_shape, n_actions, batch_size,
-                 optimizer, exp_buf_capacity, discount = .99):
+    def __init__(self, input_shape, n_actions, batch_size, optimizer,
+                 exp_buf_capacity, discount):
         BaseReplayQnet.__init__(
-            self, input_shape, n_actions, batch_size, optimizer, exp_buf_capacity,
-            WeightedExpBuf, discount)
+            self, input_shape, n_actions, batch_size, optimizer,
+            WeightedExpBuf(exp_buf_capacity), discount)
 
     def make_nn_impl(self):
         """
-        Make a NN to take in a batch of states (4 preprocessed images) with
-        an output of size 3 (stay, left, right). No activation function is
-        applied to the final output.
-        :return:
+        Make a NN to take in a batch of states (normalized downsampled image)
+        with an output of size 4 (up, down, left, right in some order). No
+        activation function is applied to the final output.
+
+        Prints out each layer since I think it's nice to see.
+
+        :return: Last layer of the NN.
         """
         initializer = tf.contrib.layers.xavier_initializer
         conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
@@ -113,13 +119,14 @@ class AdvancedGridworldQnet(BaseReplayQnet):
 
     def loss_fn(self, expected, actual):
         """
-        A function for calculating the loss of the neural network. Common
-        examples include RootMeanSquare or HuberLoss.
+        A function for calculating the loss of the neural network.
         :param expected: a batch of target_vals
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
         """
-        return tf.reduce_mean(tf.square(expected - actual))
+        return tf.losses.mean_squared_error(
+            labels=expected, predictions=actual,
+            reduction=tf.losses.Reduction.NONE)
 
     def update(self, sess):
         """
@@ -128,7 +135,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         :param sess: tf.Session()
         """
         # Get a batch of past experiences.
-        states, actions, rewards, next_states, not_terminals = \
+        ids, states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
         states = normalize(states)
         next_states = normalize(next_states)
@@ -141,7 +148,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         # value of the action we would take for each next_state.
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
-        nextQ = fullQ[:, next_actions]
+        nextQ = fullQ[range(self.batch_size), next_actions]
 
         # Discounted future value:
         # trueQ = r + discount * Q(next_state, next_action)
@@ -153,12 +160,25 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         # compute the error for feedback. Then backpropogate the loss so that
         # the network can update.
         _ = sess.run(self.train_op,
-                        feed_dict={
+                     feed_dict={
                          self.state_input: states,
-                         self.taken_actions_input: actions,
+                         self.action_input: actions,
                          self.target_vals_input: target_vals})
 
-        # TODO: for weighted, calculate loss here for reweighting
+        # Recalculate the loss of the network to update the weights of the
+        # experiences. Done after the learning step so the values represent
+        # the network in its most up to date state.
+        next_actions = self.predict(sess, next_states)
+        fullQ = sess.run(self.main_net,
+                         feed_dict={self.state_input: next_states})
+        nextQ = fullQ[range(self.batch_size), next_actions]
+        target_vals = rewards + not_terminals * self.discount * nextQ
+        loss = sess.run(self.loss,
+                        feed_dict={
+                         self.state_input: states,
+                         self.action_input: actions,
+                         self.target_vals_input: target_vals})
+        self.exp_buf.update_losses(ids, np.abs(loss))
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -201,9 +221,9 @@ def play_episode(args, sess, env, qnet, e):
         reward += r
         turn += 1
 
-    return reward, e
+    return reward, e, turn
 
-def maybe_output(args, sess, saver, qnet, episode, e, rewards):
+def maybe_output(args, sess, saver, qnet, episode, e, rewards, turns):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
@@ -215,6 +235,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
     :param episode: Episode number
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
+    :param turns: total number of turns played in training.
     :return:
     """
 
@@ -222,10 +243,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
         return
 
     # Print info about the state of the network
-    exp_buf_size = qnet.exp_buf_size()
-    exp_buf_capacity = qnet.exp_buf_capacity()
-    turn_str =\
-        ' turn=' + str(exp_buf_size) if exp_buf_size < exp_buf_capacity else ''
+    turn_str =' turn=' + str(turns)
     e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
@@ -236,7 +254,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards):
           sep='')
 
     # save the model
-    model_name = 'model-BasicGridworld-' + str(episode+1) + '.ckpt'
+    model_name = 'model-AdvancedGridworld-' + str(episode+1) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def get_qnet(args, scope=''):
@@ -245,13 +263,11 @@ def get_qnet(args, scope=''):
     the same params each time.
     """
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return BasicGridworldQnet(
+        return AdvancedGridworldQnet(
             input_shape = (25, 25, 3), n_actions=4,
             batch_size=args.batch_size,
-            optimizer=tf.train.AdamOptimizer(learning_rate=args.learn_rate),
-            exp_buf_capacity=args.exp_capacity)
-
-
+            optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
 def train(args):
     """
@@ -261,8 +277,8 @@ def train(args):
     :param args: parser.parse_args
     :return:
     """
-    env = Gridworld(5, 5)
     tf.reset_default_graph()
+    env = Gridworld(5, 5)
     qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
@@ -274,35 +290,35 @@ def train(args):
         e = args.e_i
         episode = 0
         rewards = []
+        turns = 0
 
-        while True:
-            r, e = play_episode(args, sess, env, qnet, e)
+        while episode < 20000:
+            r, e, t = play_episode(args, sess, env, qnet, e)
+            turns += t
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, qnet, episode, e, rewards)
+            maybe_output(args, sess, saver, qnet, episode, e, rewards, turns)
 
 def show_game(args):
-    env = Gridworld(5, 5)
+    env = Gridworld(rows=5, cols=5, greens=3, reds=2)
     tf.reset_default_graph()
     qnet = get_qnet(args)
 
-    init = tf.global_variables_initializer()
     saver = tf.train.Saver()
     tf.get_default_graph().finalize()
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
-        saver.restore(sess, args.ckpt_path)
+        saver.restore(sess, args.restore_ckpt)
         done = False
         state = preprocess_img(env.reset())
         _ = env.render()
-        reward = 0
-        turns = 0
+        reward, turns = 0, 0
 
         while not done:
             time.sleep(.25)
             action = qnet.predict(sess, normalize(np.array([state])))[0]
 
-            img, r, done, _ = env.step(action) # 0 and 1 don't do anything
+            img, r, done, _ = env.step(action)
             _ = env.render()
             state = preprocess_img(img)
             reward += r
@@ -312,11 +328,15 @@ def show_game(args):
 def main():
     args = parser.parse_args(sys.argv[1:])
     if args.mode == 'show':
-        assert args.ckpt_path != '', 'Must provide a checkpoint to show.'
+        assert args.restore_ckpt != '', 'Must provide a checkpoint to show.'
         args.exp_capacity = 0
         show_game(args)
     elif args.mode == 'train':
+        assert args.ckpt_dir != '', \
+            'Must provide a directory to save checkpoints to.'
         train(args)
+    else:
+        assert False, "Must provide a mode to run in: train, show."
 
 if __name__ == '__main__':
     main()
