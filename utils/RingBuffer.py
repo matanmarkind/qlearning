@@ -68,7 +68,12 @@ class WeightedRingBuf():
         self.tree = self.make_tree(capacity)
 
     def __len__(self):
-        return len(self.tree)
+        """
+        The tree is here just to manage the weights. The elements themselves
+        sit at the base of the tree in a RingBuf. That is what tells us the
+        effective size/number of elements.
+        """
+        return len(self.tree[-1])
 
     def __getitem__(self, idx):
         """
