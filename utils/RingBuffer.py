@@ -15,7 +15,7 @@ class RingBuf:
         """
         Returns the items inside of the buffer. Handles wraparound.
         """
-        if isinstance(items, list):
+        if isinstance(items, list) or isinstance(items, set):
             return [self.data[idx % self.capacity] for idx in items]
         return self.data[items % self.capacity]
 
@@ -66,6 +66,9 @@ class WeightedRingBuf():
     def __init__(self, capacity):
         self.capacity = capacity
         self.tree = self.make_tree(capacity)
+
+    def __len__(self):
+        return len(self.tree)
 
     def __getitem__(self, idx):
         """
@@ -143,18 +146,19 @@ class WeightedRingBuf():
             self.tree[depth][idx] += delta
             idx //= 2
 
-    def sample(self, num, exclude=[]):
+    def sample(self, num, exclude=set()):
         """
         Sample a number of unique experiences. The uniqueness criteria shouldn't
         cause too much change in the effective weights since we are assuming the
         batch_size is much smaller than the experience buffer.
         :param num: how many experiences to sample.
-        :param exclude: excluce certain elements
+        :param exclude: excluce certain elements, handles wraparound.
         Returns a unique set of indices for the leaves in the tree.
         """
+        true_exclude = set([index % self.capacity for index in exclude])
         idxs = set()
         while len(idxs) < num:
             leaf = self.get_leaf()
-            if leaf not in exclude:
+            if leaf not in true_exclude:
                 idxs.add(leaf)
-        return list(idxs)
+        return idxs
