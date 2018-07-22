@@ -182,7 +182,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         # TODO: remove. just for testing.
         # Check total error over time.
         if np.random.randint(10000) == 9999:
-            print(self.exp_buf.tot_loss)
+            print('Total loss =', self.exp_buf.total_loss)
 
         self.exp_buf.update_losses(ids, loss)
 
