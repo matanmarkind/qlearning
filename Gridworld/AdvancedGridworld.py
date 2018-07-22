@@ -173,20 +173,19 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
 
-        # Recalculate the loss of the network to update the weights of the
-        # experiences. Done after the learning step so the values represent
+        # Recalculate the expected values for (next_)state to
+        # update the TD error for prioritized replay.
+        # Done after the learning step so the values represent
         # the network in its most up to date state.
+        fullQ = sess.run(self.main_net,
+                         feed_dict={self.state_input: states})
+        Q = fullQ[range(self.batch_size), actions]
+
         next_actions = self.predict(sess, next_states)
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]
-        target_vals = rewards + not_terminals * self.discount * nextQ
-        loss = sess.run(self.loss,
-                        feed_dict={
-                         self.state_input: states,
-                         self.action_input: actions,
-                         self.target_vals_input: target_vals})
-        
+
         # TODO: remove. just for testing.
         # Check total error over time.
         if np.random.randint(1000) == 999:
@@ -194,9 +193,8 @@ class AdvancedGridworldQnet(BaseReplayQnet):
             print('Total loss =', tot_loss,
                   'avg loss =', tot_loss / len(self.exp_buf))
 
-        self.exp_buf.update_losses(
-            ids,
-            loss * np.log2(episode - self.first_update_episode))
+        self.exp_buf.update_weights(
+            ids, np.abs(rewards + self.discount * nextQ - Q))
 
 def play_episode(args, sess, env, qnet, e, episode):
     """
