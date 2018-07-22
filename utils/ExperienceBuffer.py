@@ -167,5 +167,9 @@ class WeightedExpBuf():
     def capacity(self):
         return self.experiences.capacity
 
+    @property
+    def total_loss(self):
+        return self.experiences.total_weight
+
     def __len__(self):
         return len(self.experiences)

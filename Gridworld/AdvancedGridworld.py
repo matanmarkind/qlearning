@@ -178,6 +178,12 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                          self.state_input: states,
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
+        
+        # TODO: remove. just for testing.
+        # Check total error over time.
+        if np.random.randint(10000) == 9999:
+            print(self.exp_buf.tot_loss)
+
         self.exp_buf.update_losses(ids, loss)
 
 def play_episode(args, sess, env, qnet, e):
