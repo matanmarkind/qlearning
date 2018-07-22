@@ -76,6 +76,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         BaseReplayQnet.__init__(
             self, input_shape, n_actions, batch_size, optimizer,
             WeightedExpBuf(exp_buf_capacity), discount)
+        self.first_update_episode = None
 
     def make_nn_impl(self):
         """
@@ -128,12 +129,19 @@ class AdvancedGridworldQnet(BaseReplayQnet):
             labels=expected, predictions=actual,
             reduction=tf.losses.Reduction.NONE)
 
-    def update(self, sess):
+    def update(self, sess, episode):
         """
         Perform a basic Q learning update by taking a batch of experiences from
         memory and replaying them.
         :param sess: tf.Session()
+        :param episode: used to scale the loss so that we aren't just
+            weighted to look at old states that haven't been
+            updated recently.
         """
+        if self.first_update_episode is None:
+          # Use -1 so that the log is always positive.
+          self.first_update_episode = episode - 1
+
         # Get a batch of past experiences.
         ids, states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
@@ -181,12 +189,16 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         
         # TODO: remove. just for testing.
         # Check total error over time.
-        if np.random.randint(10000) == 9999:
-            print('Total loss =', self.exp_buf.total_loss)
+        if np.random.randint(1000) == 999:
+            tot_loss = self.exp_buf.total_loss
+            print('Total loss =', tot_loss,
+                  'avg loss =', tot_loss / len(self.exp_buf))
 
-        self.exp_buf.update_losses(ids, loss)
+        self.exp_buf.update_losses(
+            ids,
+            loss * np.log2(episode - self.first_update_episode))
 
-def play_episode(args, sess, env, qnet, e):
+def play_episode(args, sess, env, qnet, e, episode):
     """
     Actually plays a single game and performs updates once we have enough
     experiences.
@@ -217,7 +229,7 @@ def play_episode(args, sess, env, qnet, e):
             if turn % (qnet.batch_size // 8) == 0:
                 # We want to use each experience on average 8 times so
                 # that's why for a batch size of 8 we would update every turn.
-                qnet.update(sess)
+                qnet.update(sess, episode)
             if e > args.e_f:
                 # Reduce once for every update on 8 states. This makes e
                 # not dependent on the batch_size.
@@ -299,7 +311,7 @@ def train(args):
         turns = 0
 
         while episode < 30000:
-            r, e, t = play_episode(args, sess, env, qnet, e)
+            r, e, t = play_episode(args, sess, env, qnet, e, episode)
             turns += t
             rewards.append(r)
 
