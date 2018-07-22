@@ -185,6 +185,8 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]
+        td_err = np.abs(rewards + self.discount * nextQ - Q)
+        scale_fac = np.log2(episode - self.first_update_episode)
 
         # TODO: remove. just for testing.
         # Check total error over time.
@@ -193,8 +195,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
             print('Total loss =', tot_loss,
                   'avg loss =', tot_loss / len(self.exp_buf))
 
-        self.exp_buf.update_weights(
-            ids, np.abs(rewards + self.discount * nextQ - Q))
+        self.exp_buf.update_weights(ids, td_err * scale_fac)
 
 def play_episode(args, sess, env, qnet, e, episode):
     """
