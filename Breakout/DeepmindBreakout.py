@@ -58,6 +58,9 @@ parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
 parser.add_argument(
+    '--random_starts', type=int, default=30,
+    help='randomly perform stand still at beginning of episode.')
+parser.add_argument(
     '--learning_rate', type=float, default=1e-3,
     help="learning rate for the network. passed to the optimizer.")
 parser.add_argument(
@@ -184,22 +187,37 @@ def play_episode(args, sess, env, qnet, e):
     :return: reward earned in the game, update value of e
     """
     done = False
-    img = preprocess_img(env.reset())
-    state = np.stack((img, img, img, img), axis=2)
+    _ = env.reset()
+    info = {'ale.lives': 5}
     reward = 0  # total reward for this episode
     turn = 0
+    lives = info['ale.lives']
+    terminal = True  # Anytime we lose a life
 
     while not done:
+        if terminal:
+            terminal = False
+            # To make sure that the agent doesn't just learn to set up well for
+            # the way the game starts, begin the game by not doing anything and
+            # letting the ball move.
+            for _ in range(np.random.randint(1, args.random_starts)):
+                img, _, done, info = env.step(1)  # starts game, but stays still
+            img = preprocess_img(img)
+            state = np.stack((img, img, img, img), axis=2)
+
         action = qnet.predict(sess, normalize(np.array([state])))[0]
         if np.random.rand(1) < e:
             action = qnet.rand_action()
 
-        img, r, done, _ = env.step(action + 1) # {1, 2, 3}
+        # Perform an action, prep the data, and store as an experience
+        img, r, done, info = env.step(action + 1) # {1, 2, 3}
         img = np.reshape(preprocess_img(img), (105, 80, 1))
         next_state = np.concatenate((state[:, :, :3], img), axis=2)
-        # TODO: r += info['ale.lives'] - old_lives??
-        # Feels weird to clip the reward, but comes from Deepmind paper...
-        qnet.add_experience(state, action, np.clip(r, -1, 1), next_state, done)
+        if info['ale.lives'] < lives:
+            terminal = True
+            lives = info['ale.lives']
+        qnet.add_experience(
+            state, action, np.clip(r, -1, 1), next_state, terminal)
 
         if qnet.exp_buf_size() > args.begin_updates:
             # Once we have enough experiences in the buffer we can
@@ -304,14 +322,18 @@ def show_game(args):
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
         saver.restore(sess, args.restore_ckpt)
         done = False
-        img = preprocess_img(env.reset())
+        _ = env.reset()
+        img, r, done, _ = env.step(1)  # Force start the game
         _ = env.render()
+        img = preprocess_img(img)
         state = np.stack((img, img, img, img), axis=2)
         reward, turns = 0, 0
 
         while not done:
             time.sleep(.25)
             action = qnet.predict(sess, normalize(np.array([state])))[0]
+            if np.random.rand(1) < .1:
+                action = 0  # Doesn't seem to like restarting
 
             img, r, done, _ = env.step(action + 1) # {1, 2, 3}
             _ = env.render()
