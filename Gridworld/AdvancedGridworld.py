@@ -76,6 +76,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         BaseReplayQnet.__init__(
             self, input_shape, n_actions, batch_size, optimizer,
             WeightedExpBuf(exp_buf_capacity), discount)
+        self.first_update_episode = None
 
     def make_nn_impl(self):
         """
@@ -128,12 +129,19 @@ class AdvancedGridworldQnet(BaseReplayQnet):
             labels=expected, predictions=actual,
             reduction=tf.losses.Reduction.NONE)
 
-    def update(self, sess):
+    def update(self, sess, episode):
         """
         Perform a basic Q learning update by taking a batch of experiences from
         memory and replaying them.
         :param sess: tf.Session()
+        :param episode: used to scale the loss so that we aren't just
+            weighted to look at old states that haven't been
+            updated recently.
         """
+        if self.first_update_episode is None:
+          # Use -1 so that the log is always positive.
+          self.first_update_episode = episode - 1
+
         # Get a batch of past experiences.
         ids, states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
@@ -165,22 +173,31 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
 
-        # Recalculate the loss of the network to update the weights of the
-        # experiences. Done after the learning step so the values represent
+        # Recalculate the expected values for (next_)state to
+        # update the TD error for prioritized replay.
+        # Done after the learning step so the values represent
         # the network in its most up to date state.
+        fullQ = sess.run(self.main_net,
+                         feed_dict={self.state_input: states})
+        Q = fullQ[range(self.batch_size), actions]
+
         next_actions = self.predict(sess, next_states)
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]
-        target_vals = rewards + not_terminals * self.discount * nextQ
-        loss = sess.run(self.loss,
-                        feed_dict={
-                         self.state_input: states,
-                         self.action_input: actions,
-                         self.target_vals_input: target_vals})
-        self.exp_buf.update_losses(ids, loss)
+        td_err = np.abs(rewards + self.discount * nextQ - Q)
+        scale_fac = np.log2(episode - self.first_update_episode)
 
-def play_episode(args, sess, env, qnet, e):
+        # TODO: remove. just for testing.
+        # Check total error over time.
+        if np.random.randint(1000) == 999:
+            tot_loss = self.exp_buf.total_loss
+            print('Total loss =', tot_loss,
+                  'avg loss =', tot_loss / len(self.exp_buf))
+
+        self.exp_buf.update_weights(ids, td_err * scale_fac)
+
+def play_episode(args, sess, env, qnet, e, episode):
     """
     Actually plays a single game and performs updates once we have enough
     experiences.
@@ -211,7 +228,7 @@ def play_episode(args, sess, env, qnet, e):
             if turn % (qnet.batch_size // 8) == 0:
                 # We want to use each experience on average 8 times so
                 # that's why for a batch size of 8 we would update every turn.
-                qnet.update(sess)
+                qnet.update(sess, episode)
             if e > args.e_f:
                 # Reduce once for every update on 8 states. This makes e
                 # not dependent on the batch_size.
@@ -293,7 +310,7 @@ def train(args):
         turns = 0
 
         while episode < 30000:
-            r, e, t = play_episode(args, sess, env, qnet, e)
+            r, e, t = play_episode(args, sess, env, qnet, e, episode)
             turns += t
             rewards.append(r)
 

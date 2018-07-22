@@ -151,7 +151,7 @@ class WeightedExpBuf():
         return ids, np.asarray(state), np.asarray(action), np.asarray(reward), \
                np.asarray(next_state), np.asarray(not_terminal)
 
-    def update_losses(self, exp_ids, losses):
+    def update_weights(self, exp_ids, new_weights):
         """
         Take a batch of (memory_id, loss) with which to update the tree.
 
@@ -160,12 +160,16 @@ class WeightedExpBuf():
         assert len(set(exp_ids)) == len(exp_ids),\
             "Invalid Argument: must pass a unique set of experience ids."
 
-        for idx, loss in zip(exp_ids, losses):
-            self.experiences.update_weight(idx, loss)
+        for idx, weight in zip(exp_ids, new_weights):
+            self.experiences.update_weight(idx, weight)
 
     @property
     def capacity(self):
         return self.experiences.capacity
+
+    @property
+    def total_loss(self):
+        return self.experiences.total_weight
 
     def __len__(self):
         return len(self.experiences)

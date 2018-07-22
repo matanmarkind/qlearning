@@ -167,3 +167,7 @@ class WeightedRingBuf():
             if leaf not in true_exclude:
                 idxs.add(leaf)
         return idxs
+
+    @property
+    def total_weight(self):
+        return self.tree[0][0]
