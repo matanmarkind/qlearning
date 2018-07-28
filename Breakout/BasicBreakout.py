@@ -46,10 +46,10 @@ parser.add_argument(
 parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
-    '--exp_capacity', type=int, default=int(3e5),
-    help='Number of past experiences to hold for replay. (300k ~ 10GB)')
+    '--exp_capacity', type=int, default=int(6e5),
+    help='Number of past experiences to hold for replay. (600k ~ 12GB)')
 parser.add_argument(
-    '--begin_updates', type=int, default=int(1e5),
+    '--begin_updates', type=int, default=int(5e5),
     help='Number of experiences before begin to training begins.')
 parser.add_argument(
     '--batch_size', type=int, default=32,
@@ -66,6 +66,9 @@ parser.add_argument(
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
+parser.add_argument(
+    '--show_random', type=bool, default=False,
+    help="Use random actions when mode=show at a rate of e_f")
 
 
 def preprocess_img(img):
@@ -75,9 +78,9 @@ def preprocess_img(img):
     wanted a square input for convolutions. We do not preprocess, rather we
     store as uint8 for the sake of memory.
     :param img: Atari image (210, 160, 3)
-    :return: Grayscale downsample version (105, 80)
+    :return: Grayscale downsample version (85, 80)
     """
-    return np.mean(img[::2, ::2], axis=2).astype(np.uint8)
+    return np.mean(img[::2, ::2], axis=2).astype(np.uint8)[15:100, :]
 
 def normalize(states):
     """
@@ -87,7 +90,7 @@ def normalize(states):
     """
     return states.astype(np.float32) / 128. - 1
 
-class DeepmindBreakoutQnet(BaseReplayQnet):
+class BasicBreakoutQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
@@ -99,7 +102,7 @@ class DeepmindBreakoutQnet(BaseReplayQnet):
 
     def make_nn_impl(self):
         """
-        Make a NN to take in a batch of states (4 preprocessed images) with
+        Make a NN to take in a batch of states (3 preprocessed images) with
         an output of size 3 (stay, left, right). No activation function is
         applied to the final output.
         :return:
@@ -203,7 +206,7 @@ def play_episode(args, sess, env, qnet, e):
             for _ in range(np.random.randint(1, args.random_starts)):
                 img, _, done, info = env.step(1)  # starts game, but stays still
             img = preprocess_img(img)
-            state = np.stack((img, img, img, img), axis=2)
+            state = np.stack((img, img, img), axis=2)
 
         action = qnet.predict(sess, normalize(np.array([state])))[0]
         if np.random.rand(1) < e:
@@ -211,13 +214,13 @@ def play_episode(args, sess, env, qnet, e):
 
         # Perform an action, prep the data, and store as an experience
         img, r, done, info = env.step(action + 1) # {1, 2, 3}
-        img = np.reshape(preprocess_img(img), (105, 80, 1))
-        next_state = np.concatenate((state[:, :, :3], img), axis=2)
+        img = np.reshape(preprocess_img(img), (85, 80, 1))
+        next_state = np.concatenate((state[:, :, 1:], img), axis=2)
         if info['ale.lives'] < lives:
             terminal = True
             lives = info['ale.lives']
-        qnet.add_experience(
-            state, action, np.clip(r, -1, 1), next_state, terminal)
+            r -= 1
+        qnet.add_experience(state, action, r, next_state, terminal)
 
         if qnet.exp_buf_size() > args.begin_updates:
             # Once we have enough experiences in the buffer we can
@@ -267,7 +270,7 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards, turn):
           sep='')
 
     # save the model
-    model_name = 'model-DeepmindBreakout-' + str(episode+1) + '.ckpt'
+    model_name = 'model-BasicBreakout-' + str(episode+1) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def get_qnet(args, scope=''):
@@ -276,8 +279,8 @@ def get_qnet(args, scope=''):
     the same params each time.
     """
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return DeepmindBreakoutQnet(
-            input_shape = (105, 80, 4), n_actions=3, batch_size=args.batch_size,
+        return BasicBreakoutQnet(
+            input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
             optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
             exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
@@ -285,10 +288,14 @@ def train(args):
     """
     This function trains a Neural Network on how to play brickbreaker. Is
     meant to be identical to how Deepminds paper "Playing Atari with Deep
-    Reinforcement Learning" works.
+    Reinforcement Learning" works. I use 3 images to make the state instead
+    of 4 since when using 4 I only had enough for 400k states in the buffer,
+    but now I can fit 600k and it still does well.
     :param args: parser.parse_args
     :return:
     """
+    # TODO: Figure out a way to only old each img once and then reconstruct
+    # the states from pointers to them.
     env = gym.make('BreakoutDeterministic-v4')
     tf.reset_default_graph()
     qnet = get_qnet(args)
@@ -322,25 +329,25 @@ def show_game(args):
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
         saver.restore(sess, args.restore_ckpt)
         done = False
-        _ = env.reset()
-        img, r, done, _ = env.step(1)  # Force start the game
+        img = env.reset()
         _ = env.render()
         img = preprocess_img(img)
-        state = np.stack((img, img, img, img), axis=2)
+        state = np.stack((img, img, img), axis=2)
         reward, turns = 0, 0
 
         while not done:
-            time.sleep(.25)
+            t1 = time.time()
             action = qnet.predict(sess, normalize(np.array([state])))[0]
-            if np.random.rand(1) < .1:
+            if args.show_random and np.random.rand(1) < args.e_f:
                 action = 0  # Doesn't seem to like restarting
 
             img, r, done, _ = env.step(action + 1) # {1, 2, 3}
             _ = env.render()
-            img = np.reshape(preprocess_img(img), (105, 80, 1))
-            state = np.concatenate((state[:, :, :3], img), axis=2)
+            img = np.reshape(preprocess_img(img), (85, 80, 1))
+            state = np.concatenate((state[:, :, 1:], img), axis=2)
             reward += r
             turns += 1
+            time.sleep(max(0, .1 - (time.time() - t1)))
 
     print('turns =', turns, ' reward =', reward)
 
