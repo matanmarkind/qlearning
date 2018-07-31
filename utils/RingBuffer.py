@@ -178,6 +178,9 @@ class WeightedRingBuf():
         Sample n experiences each from a different subsection of the tree
         representing 1/n of the tree by weight (instead of 1/n of the elements)
         """
+        if n == 0:
+            return set()
+
         exclude_idx = set([index % self.capacity for index in exclude])
         idxs = set()
         min_weight = 0
