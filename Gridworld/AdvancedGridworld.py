@@ -72,11 +72,26 @@ class AdvancedGridworldQnet(BaseReplayQnet):
     Class to perform basic Q learning
     """
     def __init__(self, input_shape, n_actions, batch_size, optimizer,
-                 exp_buf_capacity, discount):
+                 exp_buf_capacity, discount, huber_boundary):
         BaseReplayQnet.__init__(
             self, input_shape, n_actions, batch_size, optimizer,
             WeightedExpBuf(exp_buf_capacity), discount)
         self.first_update_episode = None
+
+        # When using priority replay the network sees surprising events
+        # more often. These events, by their nature, tend to have larger
+        # than median errors. This combination of seeing larger loss
+        # events at a larger frequency, along with the variable priority of
+        # the transitions, adds a bias to the network. Importance sampling
+        # is used to correct for this, downweighting the loss for the events
+        # that will be selected more often.
+        self.IS_weights_input = tf.placeholder(shape=None, dtype=tf.float32)
+
+        # Huber loss has 2 sections. For losses below the boundary the function
+        # is x^2, and above it is linear. This reduces sensitivity to outliers.
+        # So instead of clipping the reward, we set the huber loss boundary at
+        # the point we would clip for MSE.
+        self.huber_boundary = huber_boundary
 
     def make_nn_impl(self):
         """
@@ -127,6 +142,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         """
         return tf.losses.mean_squared_error(
             labels=expected, predictions=actual,
+            weights=self.IS_weights_input,
             reduction=tf.losses.Reduction.NONE)
 
     def update(self, sess, episode):
@@ -172,6 +188,9 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                          self.state_input: states,
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
+
+        # Hold min/max priority and when sampled, can do O(n) lookup.
+
 
         # Recalculate the expected values for (next_)state to
         # update the TD error for prioritized replay.
