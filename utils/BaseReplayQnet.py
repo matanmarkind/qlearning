@@ -69,14 +69,12 @@ class BaseReplayQnet(metaclass=ABCMeta):
       - action = used to replay an action taken before.
       - target_vals = "true" Q value for calculating loss.
       """
-      state_shape = [None]
-      for i in self.input_shape:
-          state_shape.append(i)
-      self.state_input = tf.placeholder(shape=state_shape, dtype=tf.float32)
+      self.state_input = tf.placeholder(shape=(None, *self.input_shape),
+                                        dtype=tf.float32)
 
-      self.action_input = tf.placeholder(shape=(None), dtype=tf.int32)
+      self.action_input = tf.placeholder(shape=None, dtype=tf.int32)
 
-      self.target_vals_input = tf.placeholder(shape=(None), dtype=tf.float32)
+      self.target_vals_input = tf.placeholder(shape=None, dtype=tf.float32)
 
     def make_nn(self, scope: str):
         """
@@ -99,29 +97,31 @@ class BaseReplayQnet(metaclass=ABCMeta):
 
     def make_train_op(self, optimizer):
         """
-        Whenever an experience is replayed we calculate how much value the
-        network believes it can get if it was back in that old state and
-        selected the same action, pred_vals.
+        Instantiates the child -defined loss function as well as the training
+        operation to be used for optimizing the Network.
+        
+        pred_vals - Whenever an experience is replayed we calculate how much
+        value the network believes it can get if it was back in that old state
+        and selected the same action.
 
-        We then calculate the "true" value of being back in state and acting
-        the same, target_vals. By comparing the 2 we can calculate the loss
-        and use that the learn.
+        This then compared to the "true" value of being back in the state and
+        acting the same, target_vals. By comparing the 2 we can calculate the
+        error in the networks prediction. This allows us to calculate a loss,
+        which when weighted properly, can be used to learn.
 
-        - action_input - action taken by the network the first time
-          this state was encountered. From exp_buf. tf.placeholder.
-        - target_vals_input - "true" value of a given state. This is used
-          as the expected value for calculating the error/loss of the model.
+        Returns:
         - loss - some function that calculates the loss as a function of
           the "true" value of retaking the same action in a past state,
           versus the value the network currently predicts from retaking that
-          action back in that past state.
+          action back in that past state, weighted by the importance of each
+          transition.
         - train_op - optimizer.minimize(loss). SGD function that the model
           will use to update itself.
           """
 
         with tf.variable_scope('train_op', reuse=tf.AUTO_REUSE):
             # Create a one hot encoding of the actions taken when this state was
-            # first experienced. Used to isolate the current Q value for the
+            # first experienced. Used to select the Q value predicted for the
             # action previously taken.
             actions_onehot = tf.one_hot(self.action_input, self.n_actions,
                                         dtype=tf.float32)
