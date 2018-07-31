@@ -113,12 +113,17 @@ class WeightedRingBuf():
         tree.append(RingBuf(capacity))
         return tree
 
-    def get_leaf(self):
+    def get_leaf(self, min_weight=0, max_weight=None):
         """
         Randomly select a leaf from the tree based on the weights in the tree.
         Returns the id of the leaf (the index).
         """
-        val = random.uniform(0, self.tree[0][0])
+        max_weight = self.total_weight if max_weight is None else max_weight
+        assert min_weight >= 0.0 and min_weight < max_weight and \
+                max_weight <= self.total_weight,\
+                "Invalid weight subsetting"
+
+        val = random.uniform(min_weight, max_weight)
         idx = 0
         for depth in range(1, len(self.tree) - 1):
             left_weight = self.tree[depth][idx]
@@ -151,22 +156,57 @@ class WeightedRingBuf():
             self.tree[depth][idx] += delta
             idx //= 2
 
-    def sample(self, num, exclude=set()):
+    def sample(self, n, exclude=set()):
         """
-        Sample a number of unique experiences. The uniqueness criteria shouldn't
+        Sample n unique experiences. The uniqueness criteria shouldn't
         cause too much change in the effective weights since we are assuming the
         batch_size is much smaller than the experience buffer.
-        :param num: how many experiences to sample.
+        :param n: how many experiences to sample.
         :param exclude: excluce certain elements, handles wraparound.
         Returns a unique set of indices for the leaves in the tree.
         """
-        true_exclude = set([index % self.capacity for index in exclude])
+        exclude_idx = set([index % self.capacity for index in exclude])
         idxs = set()
-        while len(idxs) < num:
-            leaf = self.get_leaf()
-            if leaf not in true_exclude:
-                idxs.add(leaf)
+        while len(idxs) < n:
+            idx = self._sample(exclude_idx)
+            exclude_idx.add(idx)
+            idxs.add(idx)
         return idxs
+
+    def sample_n_subsets(self, n, exclude=set()):
+        """
+        Sample n experiences each from a different subsection of the tree
+        representing 1/n of the tree by weight (instead of 1/n of the elements)
+        """
+        exclude_idx = set([index % self.capacity for index in exclude])
+        idxs = set()
+        min_weight = 0
+        weight_step = self.total_weight / n
+
+        for i in range(n):
+            max_weight = min(min_weight + weight_step, self.total_weight)
+            idx = self._sample(exclude_idx,
+                               min_weight=min_weight,
+                               max_weight=max_weight)
+            exclude_idx.add(idx)
+            idxs.add(idx)
+            min_weight += weight_step
+        return idxs
+
+    def _sample(exclude_idx=set(), min_weight=0.0, max_weight=None):
+        """
+        Sample a single element which falls within a subset of the trees
+        weights and is has not been requested to exclude.
+        :param exclude_idx: modded index of elements not to sample.
+        :param min_weight: used to set a minimum weight if sammpling from a
+            subsection of the tree.
+        :param max_weight: used to set a maximum weight if sammpling from a
+            subsection of the tree.
+        """
+        while True:
+            leaf = self.get_leaf(min_weight, max_weight)
+            if leaf not in exclude_idx:
+                return leaf
 
     @property
     def total_weight(self):
