@@ -214,3 +214,12 @@ class WeightedRingBuf():
     @property
     def total_weight(self):
         return self.tree[0][0]
+
+    @property
+    def min_weight(self):
+        # O(capacity)
+        min_weight = float("inf")
+        for ele in self.tree[-1]:
+            if ele.weight < min_weight:
+                min_weight = ele.weight
+        return min_weight
