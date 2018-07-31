@@ -143,7 +143,9 @@ class BaseReplayQnet(metaclass=ABCMeta):
         examples include RootMeanSquare or HuberLoss.
         :param expected: a batch of target_vals
         :param actual: a batch of outputs from the network
-        :return: a batch of losses.
+        :return: Tensor of losses with same shape as inputs. Don't bother
+            reducing since it seems to provide no benefit and have found
+            it helpful for debug to see all loses.
         """
         pass
 
