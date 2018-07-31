@@ -93,35 +93,22 @@ class BasicGridworldQnet(BaseReplayQnet):
 
         :return: Last layer of the NN.
         """
-        initializer = tf.contrib.layers.xavier_initializer
         conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('conv1', conv1)
         conv2 = tf.layers.conv2d(conv1, 32, (3, 3), (2, 2),
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('conv2', conv2)
         hidden1 = tf.layers.dense(tf.layers.flatten(conv2), 128,
-                                  activation=tf.nn.relu,
-                                  kernel_initializer=initializer(),
-                                  bias_initializer=initializer())
+                                  activation=tf.nn.relu)
         print('hidden1', hidden1)
         hidden2 = tf.layers.dense(hidden1, 64,
-                                  activation=tf.nn.relu,
-                                  kernel_initializer=initializer(),
-                                  bias_initializer=initializer())
+                                  activation=tf.nn.relu)
         print('hidden2', hidden2)
         hidden3 = tf.layers.dense(hidden2, 32,
-                                  activation=tf.nn.relu,
-                                  kernel_initializer=initializer(),
-                                  bias_initializer=initializer())
+                                  activation=tf.nn.relu)
         print('hidden3', hidden3)
-        return tf.layers.dense(hidden3, self.n_actions,
-                               kernel_initializer=initializer(),
-                               bias_initializer=initializer())
+        return tf.layers.dense(hidden3, self.n_actions)
 
     def loss_fn(self, expected, actual):
         """
