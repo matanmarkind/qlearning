@@ -65,7 +65,7 @@ class ExpBuf():
     def __len__(self):
         return len(self.experiences)
 
-class PriorityExpBuf():
+class WeightedExpBuf():
     """
     An experience buffer to hold the memory for a neural network so that
     states the network experiences can be replayed. Weights the likelihood
@@ -83,7 +83,12 @@ class PriorityExpBuf():
             self.reward = reward
             self.next_state = next_state
             self.not_terminal = not_terminal
-            self.weight = weight
+            self.weight = weight  # (error + offset) ^ alpha
+
+        def __str__(self):
+          return '[{}, {}, {}, {}, {}]'.format(self.state, self.action,
+                                               self.reward, self.next_state,
+                                               self.not_terminal)
 
     def __init__(self, capacity, alpha, beta_i, beta_f, beta_anneal, weight_offset=.01):
         """
@@ -98,9 +103,8 @@ class PriorityExpBuf():
         :param weight_offset: small positive number to prevent 0 weighting.
             Also works to slightly smooth out the disribution.
         """
-        self.capacity = capacity
         self.weight_offset = weight_offset
-        self.min_weight = weight_offset # Just to avoid x/0.
+        self.min_weight = None
         self.alpha = alpha
         self.beta = beta_i
         self.beta_f = beta_f
@@ -119,7 +123,7 @@ class PriorityExpBuf():
         Initially each experiences is given 0 weight. This is a trash
         value. We guarantee to replay unplayed experiences before
         sampling, and so on the first replay of this experiences it
-        will be given an appropriate priority. Furthermore the Importance
+        will be given an appropriate weight. Furthermore the Importance
         Sampling weight will be set to 1 for new transitions.
 
         :param state: preprocessed image group
@@ -150,8 +154,10 @@ class PriorityExpBuf():
             - not_terminal (did the episode continue after this state?)
             - Importance Sampling weights, used to correct for bias.
         """
-        # Precompute for Importance sampling.
-        P_min = (self.min_weight / self.total_weight)
+        # Precompute for Importance Sampling.
+        min_weight = self.weight_offset\
+                     if self.min_weight is None else self.min_weight
+        P_min = (min_weight / self.total_weight)
         max_IS_weight = (self.capacity * P_min) ** -self.beta
 
         ids = set()
@@ -190,10 +196,10 @@ class PriorityExpBuf():
                 weight_i = (self.capacity * P_i) ** -self.beta
                 IS_weights[idx] = weight_i / max_IS_weight
             if exp.weight == self.min_weight:
-                # The element with the minimum priority defines the
+                # The element with the minimum weight defines the
                 # max_IS_weight. If the element with the min_weight is
-                # trained against, this will update its priority. This means
-                # that on the next update_priority, we must reset the
+                # trained against, this will update its weight. This means
+                # that on the next update_weight, we must reset the
                 # min_weight.
                 self.min_weight = None
 
@@ -201,14 +207,14 @@ class PriorityExpBuf():
                np.array(next_state), np.array(not_terminal),\
                np.array([IS_weights[idx] for idx in ids])
 
-    def update_priority(self, exp_ids, new_priorities):
+    def update_weights(self, exp_ids, raw_weights):
         """
         Update the weighting of experiences for prioritized sampling.
         Internally apply exponential priority importance function
-        (priority + epsilon) ^ alpha.
+        (raw_weight + epsilon) ^ alpha.
 
         :param exp_ids: iterable of the indices of the transitions to update
-        :param new_priorities: np.array of new priority value for the matchin
+        :param raw_weights: np.array of raw weight value for the matching
             experience. (likely TD error)
 
         Expects the loss to always be positive.
@@ -216,10 +222,11 @@ class PriorityExpBuf():
         assert len(set(exp_ids)) == len(exp_ids),\
             "Invalid Argument: must pass a unique set of experience ids."
 
+        new_weights = (raw_weights + self.weight_offset) ** self.alpha
+
         # Update the weights used for sampling each of the experiences.
-        for idx, priority in zip(exp_ids, new_priorities):
-            self.experiences.update_weight(
-                    idx, (priority + self.weight_offset) ** self.alpha)
+        for idx, weight in zip(exp_ids, new_weights):
+            self.experiences.update_weight(idx, weight)
 
         # Update min_weight which is used to normalize importance sampling.
         if self.min_weight is None:
@@ -229,9 +236,7 @@ class PriorityExpBuf():
         else:
             # Otherwise just see if the updated experiences provide a new
             # min_weight
-            self.min_weight = min(
-                    self.min_weight,
-                    (np.min(new_priorities)+self.weight_offset) ** self.alpha)
+            self.min_weight = min(self.min_weight, np.min(new_weights))
 
         # Update beta which is used to weight the importance sampling.
         if self.beta < self.beta_f:
@@ -245,7 +250,7 @@ class PriorityExpBuf():
     def total_weight(self):
         """
         The total of all the probabilistic weights in the sum tree.
-        sum(priority ** alpha).
+        sum((raw_weight_i + weight_offset) ** alpha).
         """
         return self.experiences.total_weight
 
