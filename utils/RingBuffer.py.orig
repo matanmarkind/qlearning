@@ -74,8 +74,6 @@ class WeightedRingBuf():
     def __init__(self, capacity):
         self.capacity = capacity
         self.tree = self.make_tree(capacity)
-
-
     def append(self, ele):
         """
         Appends an element to the buffer and updates the weights of its
@@ -153,10 +151,7 @@ class WeightedRingBuf():
         """
         Sample n unique experiences. The uniqueness criteria shouldn't
         cause too much change in the effective weights since we are assuming the
-        batch_size is much smaller than the experience buffer and that there
-        aren't any really extreme outliers that represent a significant
-        portion of the total_weight (I'm gunna ballpark and say so long as
-        no element is > total_weight/n we should be ok).
+        batch_size is much smaller than the experience buffer.
         :param n: how many experiences to sample.
         :param exclude: excluce certain elements, handles wraparound.
         Returns a unique set of indices for the leaves in the tree.
@@ -192,7 +187,7 @@ class WeightedRingBuf():
             min_weight += weight_step
         return idxs
 
-    def _sample(self, exclude_idx=set(), min_weight=0.0, max_weight=None):
+    def _sample(exclude_idx=set(), min_weight=0.0, max_weight=None):
         """
         Sample a single element which falls within a subset of the trees
         weights and is has not been requested to exclude.
@@ -211,6 +206,7 @@ class WeightedRingBuf():
     def total_weight(self):
         return self.tree[0][0]
 
+<<<<<<< Updated upstream
     @property
     def min_weight(self):
         # O(capacity)
@@ -219,7 +215,7 @@ class WeightedRingBuf():
             if ele.weight < min_weight:
                 min_weight = ele.weight
         return min_weight
-
+=======
     def __len__(self):
         """
         The tree is here just to manage the weights. The elements themselves
@@ -241,3 +237,4 @@ class WeightedRingBuf():
         Allow user to iterate over the elements in the buffer.
         """
         return self.tree[-1].__iter__()
+>>>>>>> Stashed changes
