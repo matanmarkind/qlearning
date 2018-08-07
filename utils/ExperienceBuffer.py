@@ -104,24 +104,24 @@ class WeightedExpBuf():
             Also works to slightly smooth out the disribution.
         """
         self.weight_offset = weight_offset
-        self.min_weight = None
         self.alpha = alpha
+
+        assert beta_i < beta_f, "Beta update assumes beta_i < beta_f"
         self.beta = beta_i
         self.beta_f = beta_f
         self.beta_update = (beta_f - beta_i) / beta_anneal
 
         self.experiences = WeightedRingBuf(capacity)
-
         # ids of experiences that haven't been used for training yet.
         self.unplayed_experiences = deque(maxlen=capacity)
-
 
     def append(self, state, action, reward, next_state, is_terminal):
         """
         Takes in an experience that a network had for later replay.
 
-        Initially each experiences is given 0 weight. This is a trash
-        value. We guarantee to replay unplayed experiences before
+        Initially each experiences is given the minimum possibe weight,
+        weight_offset ** self.alpha. This is a trash value.
+        We guarantee to replay unplayed experiences before
         sampling, and so on the first replay of this experiences it
         will be given an appropriate weight. Furthermore the Importance
         Sampling weight will be set to 1 for new transitions.
@@ -134,7 +134,8 @@ class WeightedExpBuf():
         :return: index of the appended element, element overwritten
         """
         idx, old_ele = self.experiences.append(self.Experience(
-            state, action, reward, next_state, not is_terminal, 0))
+            state, action, reward, next_state, not is_terminal,
+            self.weight_offset ** self.alpha))
         self.unplayed_experiences.append(idx)
         return idx, old_ele
 
@@ -145,7 +146,9 @@ class WeightedExpBuf():
         sample from the weighted buffer by randomly sampling.
 
         :param batch_size: Number of elements to sample.
-        :return: a group of alligned vectors with the following:
+        :return: a group of alligned vectors (ith element of each vector comes
+                 from the same experience) each of len batch_size with the
+                 following:
             - ids: id of an experience (used to update the weights)
             - state
             - action when first encountered the state
@@ -155,9 +158,7 @@ class WeightedExpBuf():
             - Importance Sampling weights, used to correct for bias.
         """
         # Precompute for Importance Sampling.
-        min_weight = self.weight_offset\
-                     if self.min_weight is None else self.min_weight
-        P_min = (min_weight / self.total_weight)
+        P_min = (self.min_weight / self.total_weight)
         max_IS_weight = (self.capacity * P_min) ** -self.beta
 
         ids = set()
@@ -169,16 +170,15 @@ class WeightedExpBuf():
           # the experience can be given a legitimate weight.
           idx = self.unplayed_experiences.popleft()
           ids.add(idx)
-          # On first replay the experience if of full importance.
+          # On first replay the experience is of full importance.
           IS_weights[idx] = 1
 
-        # sample the from the weighted buffer, but make sure to exclude the ids
+        # sample from the weighted buffer, but make sure to exclude the ids
         # that were chosen from the unplayed ones.  Break the tree up into
         # ranges of weights so that we sample from a range of different
         # episodes.
-        # TODO: Not sure what the value of exclude is if I give
-        # unplayed experiences 0 weight.
-        ids |= self.experiences.sample_n_subsets(batch_size - len(ids), exclude=ids)
+        ids |= self.experiences.sample_n_subsets(batch_size - len(ids),
+                                                 exclude=ids)
         assert len(ids) == batch_size,\
             "Internal Error: incorrect sample size. len(ids)=" + str(len(ids))
 
@@ -190,18 +190,11 @@ class WeightedExpBuf():
             next_state.append(exp.next_state)
             not_terminal.append(exp.not_terminal)
             if idx not in IS_weights.keys():
-                # For already experienced weights, calculate and append
+                # For previously experienced weights, calculate and append
                 # the Importance Sampling weight.
                 P_i = exp.weight / self.total_weight
                 weight_i = (self.capacity * P_i) ** -self.beta
                 IS_weights[idx] = weight_i / max_IS_weight
-            if exp.weight == self.min_weight:
-                # The element with the minimum weight defines the
-                # max_IS_weight. If the element with the min_weight is
-                # trained against, this will update its weight. This means
-                # that on the next update_weight, we must reset the
-                # min_weight.
-                self.min_weight = None
 
         return ids, np.array(state), np.array(action), np.array(reward), \
                np.array(next_state), np.array(not_terminal),\
@@ -228,16 +221,6 @@ class WeightedExpBuf():
         for idx, weight in zip(exp_ids, new_weights):
             self.experiences.update_weight(idx, weight)
 
-        # Update min_weight which is used to normalize importance sampling.
-        if self.min_weight is None:
-            # If the min_weight experience was sampled, we must get new
-            # min_weight. This should occur very rarely, so ok O(capacity)
-            self.min_weight = self.experiences.min_weight
-        else:
-            # Otherwise just see if the updated experiences provide a new
-            # min_weight
-            self.min_weight = min(self.min_weight, np.min(new_weights))
-
         # Update beta which is used to weight the importance sampling.
         if self.beta < self.beta_f:
             self.beta = min(self.beta_f, self.beta + self.beta_update)
@@ -253,6 +236,13 @@ class WeightedExpBuf():
         sum((raw_weight_i + weight_offset) ** alpha).
         """
         return self.experiences.total_weight
+
+    @property
+    def min_weight(self):
+        """
+        Minimum weight value of all elements.
+        """
+        return self.experiences.min_weight
 
     def __len__(self):
         return len(self.experiences)
