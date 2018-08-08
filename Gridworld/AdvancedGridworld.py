@@ -108,6 +108,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
 
         :return: Last layer of the NN.
         """
+        # TODO: use dropout
         conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
                                  activation=tf.nn.relu)
         print('conv1', conv1)

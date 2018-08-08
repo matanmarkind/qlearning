@@ -120,12 +120,9 @@ class WeightedExpBuf():
         """
         Takes in an experience that a network had for later replay.
 
-        Initially each experiences is given the minimum possibe weight,
-        weight_offset ** self.alpha. This is a trash value.
-        We guarantee to replay unplayed experiences before
-        sampling, and so on the first replay of this experiences it
-        will be given an appropriate weight. Furthermore the Importance
-        Sampling weight will be set to 1 for new transitions.
+        Initially the experience is given 0 weight. It will be guaranteed
+        replay though before any experience that has already been replayd,
+        and then the user can give the experience a valid weight.
 
         :param state: preprocessed image group
         :param action: action taken when first encountered state
@@ -135,16 +132,15 @@ class WeightedExpBuf():
         :return: index of the appended element, element overwritten
         """
         idx, old_ele = self.experiences.append(self.Experience(
-            state, action, reward, next_state, not is_terminal,
-            self.weight_offset ** self.alpha))
+            state, action, reward, next_state, not is_terminal, 0))
         self.unplayed_experiences.append(idx)
         return idx, old_ele
 
     def sample(self, batch_size):
         """
-        Select up to batch_size elements from the list of experiences
-        that have never been used to learn from. Then fill out the
-        sample from the weighted buffer by randomly sampling.
+        Sample batch_size experiences (from the last capacity added).
+        Select experiences that have yet to be replayed, and fill in the
+        remaining elements by sampling from the buffer.
 
         :param batch_size: Number of elements to sample.
         :return: a group of alligned vectors (ith element of each vector comes
@@ -158,10 +154,9 @@ class WeightedExpBuf():
             - not_terminal (did the episode continue after this state?)
             - Importance Sampling weights, used to correct for bias.
         """
-        # Precompute for Importance Sampling.
-        P_min = (self.min_weight / self.total_weight)
-        max_IS_weight = (self.capacity * P_min) ** -self.beta
-
+        max_IS_weight = 0
+        assert len(self) >= batch_size, "Can't sample " + str(batch_size) +\
+            " unique elements if there aren't that many elements."
         ids = set()
         IS_weights = dict()
         while len(ids) < batch_size and len(self.unplayed_experiences) > 0:
@@ -174,14 +169,21 @@ class WeightedExpBuf():
           # On first replay the experience is of full importance.
           IS_weights[idx] = 1
 
-        # sample from the weighted buffer, but make sure to exclude the ids
-        # that were chosen from the unplayed ones.  Break the tree up into
-        # ranges of weights so that we sample from a range of different
-        # episodes.
-        ids |= self.experiences.sample_n_subsets(batch_size - len(ids),
-                                                 exclude=ids)
-        assert len(ids) == batch_size,\
-            "Internal Error: incorrect sample size. len(ids)=" + str(len(ids))
+        if len(ids) < batch_size:
+          assert self.total_weight > 0,\
+              "Attempting to re-sample without updating weights."
+          # Precompute for Importance Sampling.
+          P_min = (self.min_weight / self.total_weight)
+          max_IS_weight = (self.capacity * P_min) ** -self.beta
+
+          # sample from the weighted buffer, but make sure to exclude the ids
+          # that were chosen from the unplayed ones.  Break the tree up into
+          # ranges of weights so that we sample from a range of different
+          # episodes.
+          ids |= self.experiences.sample_n_subsets(batch_size - len(ids),
+                                                   exclude=ids)
+          assert len(ids) == batch_size,\
+              "Internal Error: incorrect sample size. len(ids)=" + str(len(ids))
 
         state, action, reward, next_state, not_terminal = [], [], [], [], []
         for idx, exp in zip(ids, self.experiences[ids]):
