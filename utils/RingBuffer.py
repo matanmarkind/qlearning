@@ -216,9 +216,11 @@ class WeightedRingBuf():
         :param max_weight: maximum weight to sample from.
         """
         max_weight = self.total_weight if max_weight is None else max_weight
-        assert min_weight >= 0.0 and min_weight < max_weight and \
+        assert min_weight >= 0.0 and min_weight <= max_weight and \
                 max_weight <= self.total_weight,\
-                "Invalid weight subsetting"
+                "Invalid weight subsetting: min_weight=" + str(min_weight) +\
+                ' max_weight=' + str(max_weight) + " total_weight=" +\
+                str(self.total_weight)
 
         val = random.uniform(min_weight, max_weight)
         idx = 0

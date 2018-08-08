@@ -135,10 +135,9 @@ class BasicGridworldQnet(BaseReplayQnet):
 
         # To predict the 'true' Q value, we use the network to predict the value
         # of the next_state, which is the value of the best action we can take
-        # from the next state.
+        # when in that state. Then take the value that the network predicts
+        # we can get from the next_state.
         next_actions = self.predict(sess, next_states)
-        # Calculate the Q value for each of the next_states, and take the Q
-        # value of the action we would take for each next_state.
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]

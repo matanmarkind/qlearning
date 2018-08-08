@@ -90,7 +90,8 @@ class WeightedExpBuf():
                                                self.reward, self.next_state,
                                                self.not_terminal)
 
-    def __init__(self, capacity, alpha, beta_i, beta_f, beta_anneal, weight_offset=.01):
+    def __init__(self, capacity, alpha, beta_i, beta_f, beta_anneal,
+                 weight_offset):
         """
         A binary tree where each leaf's value is a weight which is used to
         determine the probability of selecting a given leaf. 

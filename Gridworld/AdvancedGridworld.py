@@ -50,6 +50,18 @@ parser.add_argument(
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
+parser.add_argument('--alpha', type=float, default=.6,
+                    help="Factor for how much weight prioritization")
+parser.add_argument('--beta_i', type=float, default=.4,
+                    help="initial weighting for bias correction")
+parser.add_argument('--beta_f', type=float, default=1,
+                    help="final weighting for bias correction")
+parser.add_argument(
+    '--beta_anneal', type=int, default=int(1e6),
+    help="Number of transitions over which to anneal beta_i to beta_f"
+         "(multiple of batch_size)")
+parser.add_argument('--weight_offset', type=float, default=.01,
+                    help="small value so no transition has 0 weight.")
 
 
 def preprocess_img(img):
@@ -72,26 +84,19 @@ class AdvancedGridworldQnet(BaseReplayQnet):
     Class to perform basic Q learning
     """
     def __init__(self, input_shape, n_actions, batch_size, optimizer,
-                 exp_buf_capacity, discount, huber_boundary):
+                 exp_buf_capacity, discount, alpha, beta_i, beta_f, beta_anneal,
+                 weight_offset):
+        exp_buf = WeightedExpBuf(exp_buf_capacity, alpha, beta_i, beta_f,
+                                 beta_anneal, weight_offset)
         BaseReplayQnet.__init__(
-            self, input_shape, n_actions, batch_size, optimizer,
-            WeightedExpBuf(exp_buf_capacity), discount)
-        self.first_update_episode = None
-
-        # When using priority replay the network sees surprising events
-        # more often. These events, by their nature, tend to have larger
-        # than median errors. This combination of seeing larger loss
-        # events at a larger frequency, along with the variable priority of
-        # the transitions, adds a bias to the network. Importance sampling
-        # is used to correct for this, downweighting the loss for the events
-        # that will be selected more often.
-        self.IS_weights_input = tf.placeholder(shape=None, dtype=tf.float32)
+            self, input_shape, n_actions, batch_size, optimizer, exp_buf,
+            discount)
 
         # Huber loss has 2 sections. For losses below the boundary the function
         # is x^2, and above it is linear. This reduces sensitivity to outliers.
         # So instead of clipping the reward, we set the huber loss boundary at
         # the point we would clip for MSE.
-        self.huber_boundary = huber_boundary
+        # self.huber_boundary = huber_boundary
 
     def make_nn_impl(self):
         """
@@ -103,49 +108,51 @@ class AdvancedGridworldQnet(BaseReplayQnet):
 
         :return: Last layer of the NN.
         """
-        initializer = tf.contrib.layers.xavier_initializer
         conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('conv1', conv1)
         conv2 = tf.layers.conv2d(conv1, 32, (3, 3), (2, 2),
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('conv2', conv2)
         hidden1 = tf.layers.dense(tf.layers.flatten(conv2), 128,
-                                  activation=tf.nn.relu,
-                                  kernel_initializer=initializer(),
-                                  bias_initializer=initializer())
+                                  activation=tf.nn.relu)
         print('hidden1', hidden1)
         hidden2 = tf.layers.dense(hidden1, 64,
-                                  activation=tf.nn.relu,
-                                  kernel_initializer=initializer(),
-                                  bias_initializer=initializer())
+                                  activation=tf.nn.relu)
         print('hidden2', hidden2)
         hidden3 = tf.layers.dense(hidden2, 32,
-                                  activation=tf.nn.relu,
-                                  kernel_initializer=initializer(),
-                                  bias_initializer=initializer())
+                                  activation=tf.nn.relu)
         print('hidden3', hidden3)
-        return tf.layers.dense(hidden3, self.n_actions,
-                               kernel_initializer=initializer(),
-                               bias_initializer=initializer())
+        return tf.layers.dense(hidden3, self.n_actions)
 
     def loss_fn(self, expected, actual):
         """
         A function for calculating the loss of the neural network.
+        IS_weights_input must be created here since loss_fn is an abstractmethod
+        and must be available to the parent, so dependencies cannot be pushed
+        off until after parent construction. (Seems like a bad design in python,
+        a virtual function should be allowed to depend on things specific to
+        the child/implementer class).
+
         :param expected: a batch of target_vals
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
         """
+        # When using priority replay the network sees surprising events
+        # more often. These events, by their nature, tend to have larger
+        # than median errors. This combination of seeing larger loss
+        # events at a larger frequency, along with the variable priority of
+        # the transitions, adds a bias to the network. Importance sampling
+        # is used to correct for this, downweighting the loss for the events
+        # that will be selected more often.
+        self.IS_weights_input = tf.placeholder(shape=None, dtype=tf.float32)
+
         return tf.losses.mean_squared_error(
             labels=expected, predictions=actual,
             weights=self.IS_weights_input,
             reduction=tf.losses.Reduction.NONE)
 
-    def update(self, sess, episode):
+    def update(self, sess):
         """
         Perform a basic Q learning update by taking a batch of experiences from
         memory and replaying them.
@@ -154,22 +161,23 @@ class AdvancedGridworldQnet(BaseReplayQnet):
             weighted to look at old states that haven't been
             updated recently.
         """
-        if self.first_update_episode is None:
-          # Use -1 so that the log is always positive.
-          self.first_update_episode = episode - 1
-
         # Get a batch of past experiences.
-        ids, states, actions, rewards, next_states, not_terminals = \
+        ids, states, actions, rewards, next_states, not_terminals, IS_weights =\
             self.exp_buf.sample(self.batch_size)
         states = normalize(states)
         next_states = normalize(next_states)
 
+        # Calculate the predicted value from the network based on a previously
+        # experienced state, assuming we perform the same action.
+        fullQ = sess.run(self.main_net,
+                         feed_dict={self.state_input: next_states})
+        pred_vals = fullQ[range(self.batch_size), actions]
+
         # To predict the 'true' Q value, we use the network to predict the value
         # of the next_state, which is the value of the best action we can take
-        # from the next state.
+        # when in that state. Then take the value that the network predicts
+        # we can get from the next_state.
         next_actions = self.predict(sess, next_states)
-        # Calculate the Q value for each of the next_states, and take the Q
-        # value of the action we would take for each next_state.
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]
@@ -179,6 +187,11 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         # If this is a terminal term, trueQ = r
         target_vals = rewards + not_terminals * self.discount * nextQ
 
+        # Update the weighting for each experience based on its TD error.
+        # TODO: why do we take the error before training, don't these weights
+        # become stale as soon as train_op is run?
+        self.exp_buf.update_weights(ids, abs(target_vals - pred_vals))
+
         # Calculate the value of being back in state and performing action. Then
         # compare that the the expected value just calculated. This is used to
         # compute the error for feedback. Then backpropogate the loss so that
@@ -187,36 +200,11 @@ class AdvancedGridworldQnet(BaseReplayQnet):
                      feed_dict={
                          self.state_input: states,
                          self.action_input: actions,
-                         self.target_vals_input: target_vals})
+                         self.target_vals_input: target_vals,
+                         self.IS_weights_input: IS_weights})
 
-        # Hold min/max priority and when sampled, can do O(n) lookup.
 
-
-        # Recalculate the expected values for (next_)state to
-        # update the TD error for prioritized replay.
-        # Done after the learning step so the values represent
-        # the network in its most up to date state.
-        fullQ = sess.run(self.main_net,
-                         feed_dict={self.state_input: states})
-        Q = fullQ[range(self.batch_size), actions]
-
-        next_actions = self.predict(sess, next_states)
-        fullQ = sess.run(self.main_net,
-                         feed_dict={self.state_input: next_states})
-        nextQ = fullQ[range(self.batch_size), next_actions]
-        td_err = np.abs(rewards + self.discount * nextQ - Q)
-        scale_fac = np.log2(episode - self.first_update_episode)
-
-        # TODO: remove. just for testing.
-        # Check total error over time.
-        if np.random.randint(1000) == 999:
-            tot_loss = self.exp_buf.total_loss
-            print('Total loss =', tot_loss,
-                  'avg loss =', tot_loss / len(self.exp_buf))
-
-        self.exp_buf.update_weights(ids, td_err * scale_fac)
-
-def play_episode(args, sess, env, qnet, e, episode):
+def play_episode(args, sess, env, qnet, e):
     """
     Actually plays a single game and performs updates once we have enough
     experiences.
@@ -247,7 +235,7 @@ def play_episode(args, sess, env, qnet, e, episode):
             if turn % (qnet.batch_size // 8) == 0:
                 # We want to use each experience on average 8 times so
                 # that's why for a batch size of 8 we would update every turn.
-                qnet.update(sess, episode)
+                qnet.update(sess)
             if e > args.e_f:
                 # Reduce once for every update on 8 states. This makes e
                 # not dependent on the batch_size.
@@ -298,12 +286,19 @@ def get_qnet(args, scope=''):
     Wrapper for getting the Gridworld network so don't have to copy and paste
     the same params each time.
     """
+    assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
+    assert args.beta_anneal % args.batch_size == 0,\
+        "beta_anneal must be a multiple of batch_size"
+
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         return AdvancedGridworldQnet(
             input_shape = (25, 25, 3), n_actions=4,
             batch_size=args.batch_size,
             optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
-            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount,
+            alpha=args.alpha, beta_i=args.beta_i, beta_f=args.beta_f,
+            beta_anneal=args.beta_anneal // args.batch_size,
+            weight_offset=args.weight_offset)
 
 def train(args):
     """
@@ -329,7 +324,7 @@ def train(args):
         turns = 0
 
         while episode < 30000:
-            r, e, t = play_episode(args, sess, env, qnet, e, episode)
+            r, e, t = play_episode(args, sess, env, qnet, e)
             turns += t
             rewards.append(r)
 
