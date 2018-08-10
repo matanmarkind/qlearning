@@ -1,15 +1,3 @@
-"""
-This is an attempt to recreate the algorithm that was used by deepmind in the
-first major paper they published about beating atari games.
-https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
-
-Uses some changes suggested in
-https://becominghuman.ai/lets-build-an-atari-ai-part-1-dqn-df57e8ff3b26
-
-And the gaps were filled based on the implementation in
-https://github.com/boyuanf/DeepQLearning/blob/master/deep_q_learning.py
-"""
-
 from datetime import datetime
 from resource import getrusage, RUSAGE_SELF
 import tensorflow as tf
@@ -42,7 +30,7 @@ parser.add_argument(
     '--exp_capacity', type=int, default=int(1e6),
     help='Number of past experiences to hold for replay.')
 parser.add_argument(
-    '--begin_updates', type=int, default=int(1e5),
+    '--begin_updates', type=int, default=int(5e5),
     help='Number of experiences before begin to training begins.')
 parser.add_argument(
     '--batch_size', type=int, default=32,
@@ -56,6 +44,10 @@ parser.add_argument(
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
+parser.add_argument('--train_record_fname', type=str,
+        default="training-record-BasicGridworld.txt",
+        help="Absolute path to file to save progress to (same as what is"
+        " printed to cmd line.")
 
 
 def preprocess_img(img):
@@ -66,12 +58,12 @@ def preprocess_img(img):
     """
     return (img[::2, ::2, :]).astype(np.uint8)
 
-def normalize(imgs):
+def normalize(states):
     """
-    :param imgs: downsampled gridworld image
+    :param states: downsampled gridworld image
     :return: normalized img with values on [-1, 1)
     """
-    return imgs.astype(np.float32) / 128. - 1
+    return states.astype(np.float32) / 128. - 1
 
 class BasicGridworldQnet(BaseReplayQnet):
     """
@@ -157,6 +149,21 @@ class BasicGridworldQnet(BaseReplayQnet):
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
 
+
+def get_qnet(args, scope=''):
+    """
+    Wrapper for getting the Gridworld network so don't have to copy and paste
+    the same params each time.
+    """
+    assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
+
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return BasicGridworldQnet(
+            input_shape = (25, 25, 3), n_actions=4,
+            batch_size=args.batch_size,
+            optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
+
 def play_episode(args, sess, env, qnet, e):
     """
     Actually plays a single game and performs updates once we have enough
@@ -200,19 +207,17 @@ def play_episode(args, sess, env, qnet, e):
 
     return reward, e, turn
 
-def maybe_output(args, sess, saver, qnet, episode, e, rewards, turns):
+def maybe_output(args, sess, saver, episode, e, rewards, turn):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
     :param args: parser.parse_args
     :param sess: tf.Session()
     :param saver: tf.train.Saver()
-    :param qnet: class which holds the NN used to play learn and which holds the
-        experiences.
     :param episode: Episode number
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
-    :param turns: total number of turns played in training.
+    :param turn: total number of turns played in training.
     :return:
     """
 
@@ -220,32 +225,22 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards, turns):
         return
 
     # Print info about the state of the network
-    turn_str =' turn=' + str(turns)
+    turn_str =' turn=' + str(turn)
     e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
-          ' episode=', episode+1,
-          ' reward_last_' + str(args.output_period) + '_games=',
-          int(sum(rewards[-args.output_period:])), e_str, turn_str,
-          sep='')
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S ")
+    reward_str = ' reward_last_' + str(args.output_period) + '_games='
+    output_str = ''.join(
+        (time_str, mem_usg_str, ' episode=', str(episode+1), reward_str,
+         str(int(sum(rewards[-args.output_period:]))), e_str, turn_str))
+    print(output_str)
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write(output_str + '\n')
 
     # save the model
     model_name = 'model-BasicGridworld-' + str(episode+1) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
-
-def get_qnet(args, scope=''):
-    """
-    Wrapper for getting the Gridworld network so don't have to copy and paste
-    the same params each time.
-    """
-    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return BasicGridworldQnet(
-            input_shape = (25, 25, 3), n_actions=4,
-            batch_size=args.batch_size,
-            optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate),
-            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
-
 
 def train(args):
     """
@@ -255,8 +250,11 @@ def train(args):
     :param args: parser.parse_args
     :return:
     """
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write("BasicGridworld -- begin training --\n")
+
     tf.reset_default_graph()
-    env = Gridworld(5, 5)
+    env = Gridworld(rows=5, cols=5, greens=3, reds=2)
     qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
@@ -268,15 +266,18 @@ def train(args):
         e = args.e_i
         episode = 0
         rewards = []
-        turns = 0
+        turn = 0
 
         while episode < 30000:
             r, e, t = play_episode(args, sess, env, qnet, e)
-            turns += t
+            turn += t
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, qnet, episode, e, rewards, turns)
+            maybe_output(args, sess, saver, episode, e, rewards, turn)
+
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write('\n\n')
 
 def show_game(args):
     env = Gridworld(rows=5, cols=5, greens=3, reds=2)
@@ -293,7 +294,7 @@ def show_game(args):
         reward, turns = 0, 0
 
         while not done:
-            time.sleep(.25)
+            t1 = time.time()
             action = qnet.predict(sess, normalize(np.array([state])))[0]
 
             img, r, done, _ = env.step(action)
@@ -301,6 +302,7 @@ def show_game(args):
             state = preprocess_img(img)
             reward += r
             turns += 1
+            time.sleep(max(0, .2 - (time.time() - t1)))
     print('turns =', turns, ' reward =', reward, ' reward/turn =', reward/turns)
 
 def main():

@@ -15,7 +15,6 @@ from resource import getrusage, RUSAGE_SELF
 
 import tensorflow as tf
 import numpy as np
-
 import gym, os, argparse, sys, time
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -47,7 +46,7 @@ parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
     '--exp_capacity', type=int, default=int(6e5),
-    help='Number of past experiences to hold for replay. (600k ~ 12GB)')
+    help='Number of past experiences to hold for replay. (600k ~ 12.5GB)')
 parser.add_argument(
     '--begin_updates', type=int, default=int(5e5),
     help='Number of experiences before begin to training begins.')
@@ -58,17 +57,21 @@ parser.add_argument(
     '--output_period', type=int, default=1000,
     help='Number of episodes between outputs (print, checkpoint)')
 parser.add_argument(
-    '--random_starts', type=int, default=30,
-    help='randomly perform stand still at beginning of episode.')
-parser.add_argument(
-    '--learning_rate', type=float, default=1e-3,
+    '--learning_rate', type=float, default=1e-4,
     help="learning rate for the network. passed to the optimizer.")
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
+parser.add_argument('--train_record_fname', type=str,
+        default="training-record-BasicBreakout.txt",
+        help="Absolute path to file to save progress to (same as what is"
+        " printed to cmd line.")
 parser.add_argument(
     '--show_random', type=bool, default=False,
     help="Use random actions when mode=show at a rate of e_f")
+parser.add_argument(
+    '--random_starts', type=int, default=30,
+    help='randomly perform stand still at beginning of episode.')
 
 
 def preprocess_img(img):
@@ -107,26 +110,17 @@ class BasicBreakoutQnet(BaseReplayQnet):
         applied to the final output.
         :return:
         """
-        initializer = tf.contrib.layers.xavier_initializer
         print('state_input', self.state_input)
         conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('conv1', conv1)
         conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('conv2', conv2)
         hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
-                                 activation=tf.nn.relu,
-                                 kernel_initializer=initializer(),
-                                 bias_initializer=initializer())
+                                 activation=tf.nn.relu)
         print('hidden', hidden)
-        return tf.layers.dense(hidden, self.n_actions,
-                               kernel_initializer=initializer(),
-                               bias_initializer=initializer())
+        return tf.layers.dense(hidden, self.n_actions)
 
     def loss_fn(self, expected, actual):
         """
@@ -154,10 +148,9 @@ class BasicBreakoutQnet(BaseReplayQnet):
 
         # To predict the 'true' Q value, we use the network to predict the value
         # of the next_state, which is the value of the best action we can take
-        # from the next state.
+        # when in that state. Then take the value that the network predicts
+        # we can get from the next_state.
         next_actions = self.predict(sess, next_states)
-        # Calculate the Q value for each of the next_states, and take the Q
-        # value of the action we would take for each next_state.
         fullQ = sess.run(self.main_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]
@@ -171,12 +164,25 @@ class BasicBreakoutQnet(BaseReplayQnet):
         # compare that the the expected value just calculated. This is used to
         # compute the error for feedback. Then backpropogate the loss so that
         # the network can update.
-
         _ = sess.run(self.train_op,
                      feed_dict={
                          self.state_input: states,
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
+
+
+def get_qnet(args, scope=''):
+    """
+    Wrapper for getting the Breakout network so don't have to copy and paste
+    the same params each time.
+    """
+    assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
+
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return BasicBreakoutQnet(
+            input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
+            optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -195,7 +201,7 @@ def play_episode(args, sess, env, qnet, e):
     reward = 0  # total reward for this episode
     turn = 0
     lives = info['ale.lives']
-    terminal = True  # Anytime we lose a life
+    terminal = True  # Anytime we lose a life, and beginning of episode.
 
     while not done:
         if terminal:
@@ -240,18 +246,17 @@ def play_episode(args, sess, env, qnet, e):
 
     return reward, e, turn
 
-def maybe_output(args, sess, saver, qnet, episode, e, rewards, turn):
+def maybe_output(args, sess, saver, episode, e, rewards, turn):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
     :param args: parser.parse_args
     :param sess: tf.Session()
     :param saver: tf.train.Saver()
-    :param qnet: class which holds the NN used to play learn and which holds the
-        experiences.
     :param episode: Episode number
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
+    :param turn: total number of turns played in training.
     :return:
     """
 
@@ -263,26 +268,18 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards, turn):
     e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
-          ' episode=', episode+1,
-          ' reward_last_' + str(args.output_period) + '_games=',
-          int(sum(rewards[-args.output_period:])), e_str, turn_str,
-          sep='')
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S ")
+    reward_str = ' reward_last_' + str(args.output_period) + '_games='
+    output_str = ''.join(
+        (time_str, mem_usg_str, ' episode=', str(episode+1), reward_str,
+         str(int(sum(rewards[-args.output_period:]))), e_str, turn_str))
+    print(output_str)
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write(output_str + '\n')
 
     # save the model
     model_name = 'model-BasicBreakout-' + str(episode+1) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
-
-def get_qnet(args, scope=''):
-    """
-    Wrapper for getting the Gridworld network so don't have to copy and paste
-    the same params each time.
-    """
-    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return BasicBreakoutQnet(
-            input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
-            optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
 def train(args):
     """
@@ -294,8 +291,12 @@ def train(args):
     :param args: parser.parse_args
     :return:
     """
-    # TODO: Figure out a way to only old each img once and then reconstruct
-    # the states from pointers to them.
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write("BasicBreakout -- begin training --\n")
+    # TODO: Figure out a way to only hold each img once and then reconstruct
+    # the states from pointers to them. Would probs point to the last and grab
+    # most_recent[-3:] and repeat an initial state 4x in the buffer like we
+    # do to create the initial state now.
     env = gym.make('BreakoutDeterministic-v4')
     tf.reset_default_graph()
     qnet = get_qnet(args)
@@ -317,7 +318,10 @@ def train(args):
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, qnet, episode, e, rewards, turn)
+            maybe_output(args, sess, saver, episode, e, rewards, turn)
+
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write('\n\n')
 
 def show_game(args):
     env = gym.make('BreakoutDeterministic-v4')
@@ -347,7 +351,7 @@ def show_game(args):
             state = np.concatenate((state[:, :, 1:], img), axis=2)
             reward += r
             turns += 1
-            time.sleep(max(0, .1 - (time.time() - t1)))
+            time.sleep(max(0, .05 - (time.time() - t1)))
 
     print('turns =', turns, ' reward =', reward)
 
