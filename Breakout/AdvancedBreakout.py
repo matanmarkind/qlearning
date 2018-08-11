@@ -63,6 +63,10 @@ parser.add_argument(
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
+parser.add_argument('--train_record_fname', type=str,
+        default="training-record-AdvancedBreakout.txt",
+        help="Absolute path to file to save progress to (same as what is"
+        " printed to cmd line.")
 parser.add_argument(
     '--show_random', type=bool, default=False,
     help="Use random actions when mode=show at a rate of e_f")
@@ -292,18 +296,17 @@ def play_episode(args, sess, env, qnet, e):
 
     return reward, e, turn
 
-def maybe_output(args, sess, saver, qnet, episode, e, rewards, turn):
+def maybe_output(args, sess, saver, episode, e, rewards, turn):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
     :param args: parser.parse_args
     :param sess: tf.Session()
     :param saver: tf.train.Saver()
-    :param qnet: class which holds the NN used to play learn and which holds the
-        experiences.
     :param episode: Episode number
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
+    :param turn: total number of turns played in training.
     :return:
     """
 
@@ -315,11 +318,14 @@ def maybe_output(args, sess, saver, qnet, episode, e, rewards, turn):
     e_str = ' e={:0.2f}'.format(e)
     mem_usg_str = \
         ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S "), mem_usg_str,
-          ' episode=', episode+1,
-          ' reward_last_' + str(args.output_period) + '_games=',
-          int(sum(rewards[-args.output_period:])), e_str, turn_str,
-          sep='')
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S ")
+    reward_str = ' reward_last_' + str(args.output_period) + '_games='
+    output_str = ''.join(
+        (time_str, mem_usg_str, ' episode=', str(episode+1), reward_str,
+         str(int(sum(rewards[-args.output_period:]))), e_str, turn_str))
+    print(output_str)
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write(output_str + '\n')
 
     # save the model
     model_name = 'model-AdvancedBreakout-' + str(episode+1) + '.ckpt'
@@ -335,8 +341,8 @@ def train(args):
     :param args: parser.parse_args
     :return:
     """
-    # TODO: Figure out a way to only old each img once and then reconstruct
-    # the states from pointers to them.
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write("AdvancedBreakout -- begin training --\n")
     env = gym.make('BreakoutDeterministic-v4')
     tf.reset_default_graph()
     qnet = get_qnet(args)
@@ -352,13 +358,16 @@ def train(args):
         rewards = []
         turn = 0
 
-        while True:
+        while episode < 30000:
             r, e, t = play_episode(args, sess, env, qnet, e)
             turn += t
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, qnet, episode, e, rewards, turn)
+            maybe_output(args, sess, saver, episode, e, rewards, turn)
+
+    with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
+        f.write('\n\n')
 
 def show_game(args):
     env = gym.make('BreakoutDeterministic-v4')

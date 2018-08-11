@@ -332,7 +332,7 @@ def train(args):
         rewards = []
         turn = 0
 
-        while episode < 30000:
+        while episode < 40000:
             r, e, t = play_episode(args, sess, env, qnet, e)
             turn += t
             rewards.append(r)
