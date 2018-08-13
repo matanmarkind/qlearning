@@ -197,10 +197,9 @@ def play_episode(args, sess, env, qnet, e):
     """
     done = False
     _ = env.reset()
-    info = {'ale.lives': 5}
     reward = 0  # total reward for this episode
     turn = 0
-    lives = info['ale.lives']
+    lives = 5  # Always start with 5 lives
     terminal = True  # Anytime we lose a life, and beginning of episode.
 
     while not done:
@@ -225,7 +224,6 @@ def play_episode(args, sess, env, qnet, e):
         if info['ale.lives'] < lives:
             terminal = True
             lives = info['ale.lives']
-            r -= 1
         qnet.add_experience(state, action, r, next_state, terminal)
 
         if qnet.exp_buf_size() > args.begin_updates:
@@ -312,7 +310,7 @@ def train(args):
         rewards = []
         turn = 0
 
-        while episode < 30000:
+        while episode < 50000:
             r, e, t = play_episode(args, sess, env, qnet, e)
             turn += t
             rewards.append(r)

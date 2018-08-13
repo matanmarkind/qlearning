@@ -80,7 +80,7 @@ parser.add_argument('--beta_i', type=float, default=.4,
 parser.add_argument('--beta_f', type=float, default=1,
                     help="final weighting for bias correction")
 parser.add_argument(
-    '--beta_anneal', type=int, default=int(1e6),
+    '--beta_anneal', type=int, default=int(150e6),
     help="Number of transitions over which to anneal beta_i to beta_f"
          "(multiple of batch_size)")
 parser.add_argument('--weight_offset', type=float, default=.01,
@@ -247,11 +247,10 @@ def play_episode(args, sess, env, qnet, e):
     """
     done = False
     _ = env.reset()
-    info = {'ale.lives': 5}
     reward = 0  # total reward for this episode
     turn = 0
-    lives = info['ale.lives']
-    terminal = True  # Anytime we lose a life
+    lives = 5  # Always start with 5 lives
+    terminal = True  # Anytime we lose a life, and beginning of episode.
 
     while not done:
         if terminal:
@@ -275,7 +274,6 @@ def play_episode(args, sess, env, qnet, e):
         if info['ale.lives'] < lives:
             terminal = True
             lives = info['ale.lives']
-            r -= 1
         qnet.add_experience(state, action, r, next_state, terminal)
 
         if qnet.exp_buf_size() > args.begin_updates:
@@ -296,7 +294,7 @@ def play_episode(args, sess, env, qnet, e):
 
     return reward, e, turn
 
-def maybe_output(args, sess, saver, episode, e, rewards, turn):
+def maybe_output(args, sess, saver, episode, e, rewards, turn, qnet):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
@@ -307,6 +305,7 @@ def maybe_output(args, sess, saver, episode, e, rewards, turn):
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
     :param turn: total number of turns played in training.
+    :param qnet: NN being trained
     :return:
     """
 
@@ -314,15 +313,18 @@ def maybe_output(args, sess, saver, episode, e, rewards, turn):
         return
 
     # Print info about the state of the network
-    turn_str =' turn=' + str(turn)
-    e_str = ' e={:0.2f}'.format(e)
-    mem_usg_str = \
-        ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
     time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S ")
-    reward_str = ' reward_last_' + str(args.output_period) + '_games='
-    output_str = ''.join(
-        (time_str, mem_usg_str, ' episode=', str(episode+1), reward_str,
-         str(int(sum(rewards[-args.output_period:]))), e_str, turn_str))
+    mem_usg_str = \
+        'mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
+    episode_str = ' episode=' + str(episode+1)
+    e_str = 'e={:0.2f}'.format(e)
+    reward_str = 'reward_last_' + str(args.output_period) + '_games=' +\
+            str(int(sum(rewards[-args.output_period:])))
+    turn_str = 'turn=' + str(turn)
+    beta_str =  "beta=" + str(qnet.exp_buf.beta)
+
+    output_str = ' '.join((time_str, mem_usg_str, episode_str, reward_str,
+                           e_str, turn_str, beta_str))
     print(output_str)
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write(output_str + '\n')
@@ -358,13 +360,13 @@ def train(args):
         rewards = []
         turn = 0
 
-        while episode < 30000:
+        while episode < 50000:
             r, e, t = play_episode(args, sess, env, qnet, e)
             turn += t
             rewards.append(r)
 
             episode += 1
-            maybe_output(args, sess, saver, episode, e, rewards, turn)
+            maybe_output(args, sess, saver, episode, e, rewards, turn, qnet)
 
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write('\n\n')
