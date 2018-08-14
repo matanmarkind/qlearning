@@ -19,8 +19,9 @@ parser.add_argument('--e_i', type=float, default=1,
 parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(1e6),
-    help='Number of updates to linearly anneal from e_i to e_f.')
+    '--e_anneal', type=int, default=int(5e6),
+    help='Number of transition replays over which to linearly anneal from e_i '
+         'to e_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
     help='Folder to save checkpoints to.')
@@ -36,8 +37,8 @@ parser.add_argument(
     '--batch_size', type=int, default=32,
     help='Batch size for each update to the network (multiple of 8)')
 parser.add_argument(
-    '--output_period', type=int, default=1000,
-    help='Number of episodes between outputs (print, checkpoint)')
+    '--output_period', type=int, default=250000,
+    help='Number of transition updates between outputs (print, checkpoint)')
 parser.add_argument(
     '--learning_rate', type=float, default=1e-4,
     help="learning rate for the network. passed to the optimizer.")
@@ -48,6 +49,9 @@ parser.add_argument('--train_record_fname', type=str,
         default="training-record-BasicGridworld.txt",
         help="Absolute path to file to save progress to (same as what is"
         " printed to cmd line.")
+parser.add_argument('--train_steps', type=int, default=int(1e7),
+                    help="Number of transition replays to experience "
+                         "(will update train_steps // batch_size times)")
 
 
 def preprocess_img(img):
@@ -173,12 +177,14 @@ def play_episode(args, sess, env, qnet, e):
     :param env: Gridworld()
     :param qnet: class which holds the NN to play and update.
     :param e: chance of a random action selection.
-    :return: reward earned in the game, update value of e
+    :return: reward earned in the game, update value of e, transitions updated
+        against.
     """
     done = False
     state = preprocess_img(env.reset())
     reward = 0  # total reward for this episode
     turn = 0
+    transitions = 0  # updates * batch_size
 
     while not done:
         action = qnet.predict(sess, normalize(np.array([state])))[0]
@@ -196,50 +202,51 @@ def play_episode(args, sess, env, qnet, e):
                 # We want to use each experience on average 8 times so
                 # that's why for a batch size of 8 we would update every turn.
                 qnet.update(sess)
-            if e > args.e_f:
-                # Reduce once for every update on 8 states. This makes e
-                # not dependent on the batch_size.
-                e -= (args.e_i - args.e_f) / args.e_anneal
+                transitions += qnet.batch_size
+                if e > args.e_f:
+                    # Reduce once for every update on 8 states. This makes e
+                    # not dependent on the batch_size.
+                    e -= (qnet.batch_size*(args.e_i - args.e_f)) / args.e_anneal
 
         state = next_state
         reward += r
         turn += 1
 
-    return reward, e, turn
+    return reward, e, transitions
 
-def maybe_output(args, sess, saver, episode, e, rewards, turn):
+def write_output(args, sess, saver, last_output_ep, e, rewards,
+                 transitions):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
     :param args: parser.parse_args
     :param sess: tf.Session()
     :param saver: tf.train.Saver()
-    :param episode: Episode number
+    :param last_output_ep: number of episodes played at last output
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
-    :param turn: total number of turns played in training.
+    :param transitions: Number of transitions replayed.
     :return:
     """
+    num_eps = len(rewards) - last_output_ep
 
-    if (episode +1) % args.output_period != 0:
-        return
-
-    # Print info about the state of the network
-    turn_str =' turn=' + str(turn)
-    e_str = ' e={:0.2f}'.format(e)
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mem_usg_str = \
-        ' mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
-    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S ")
-    reward_str = ' reward_last_' + str(args.output_period) + '_games='
-    output_str = ''.join(
-        (time_str, mem_usg_str, ' episode=', str(episode+1), reward_str,
-         str(int(sum(rewards[-args.output_period:]))), e_str, turn_str))
+        'mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
+    episode_str = 'episode=' + str(len(rewards))
+    reward_str = 'avg_reward_last_' + str(num_eps) + '_games=' + \
+                 str(sum(rewards[-num_eps:]) // num_eps)
+    e_str = 'e={:0.2f}'.format(e)
+    transitions_str ='training_step=' + str(transitions)
+
+    output_str = '  '.join((time_str, mem_usg_str, episode_str, reward_str,
+                            e_str, transitions_str))
     print(output_str)
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write(output_str + '\n')
 
     # save the model
-    model_name = 'model-BasicGridworld-' + str(episode+1) + '.ckpt'
+    model_name = 'model-BasicGridworld-' + str(transitions) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def train(args):
@@ -264,17 +271,30 @@ def train(args):
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
         sess.run(init)
         e = args.e_i
-        episode = 0
+        last_output_ep = 0
         rewards = []
-        turn = 0
+        transitions = 0  # number of transitions updated against
+        next_output = args.output_period
 
-        while episode < 40000:
+        # TODO: switch to basing printing and completion based on number of
+        # transitions replayed instead of episodes.
+        while transitions < args.train_steps:
             r, e, t = play_episode(args, sess, env, qnet, e)
-            turn += t
+            if transitions == 0 and t > 0:
+                # Output status from before training starts.
+                write_output(args, sess, saver, last_output_ep, e, rewards,
+                             transitions, qnet)
+                last_output_ep = len(rewards)
+
+            transitions += t
             rewards.append(r)
 
-            episode += 1
-            maybe_output(args, sess, saver, episode, e, rewards, turn)
+            if transitions > next_output:
+                # Regular output during training.
+                write_output(args, sess, saver, last_output_ep, e, rewards,
+                             transitions)
+                next_output += args.output_period
+                last_output_ep = len(rewards)
 
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write('\n\n')
