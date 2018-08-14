@@ -32,7 +32,7 @@ parser.add_argument('--e_i', type=float, default=1,
 parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(10e6),
+    '--e_anneal', type=int, default=int(50e6),
     help='Number of transition replays over which to linearly anneal from e_i '
          'to e_f.')
 parser.add_argument(
@@ -344,7 +344,7 @@ def train(args):
     saver = tf.train.Saver()
     # Don't want to change the graph once we begin playing the game.
     tf.get_default_graph().finalize()
-    with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
+    with tf.Session() as sess:
         sess.run(init)
         e = args.e_i
         last_output_ep = 0
