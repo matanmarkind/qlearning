@@ -27,19 +27,14 @@ from utils.BaseReplayQnet import BaseReplayQnet
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, help='train, show')
-# TODO: consider having a 2 step anneal. Here we stop at 10% but that may
-# make long terms planning hard for the network since the further into
-# the future we go, the more likely its planning is to get messed up
-# by a forced random action. Perhaps do 100% -> 10% over X steps, then
-# hold random action at 10% for X steps, then anneal from 10% -> 1%
-# over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
 parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(1e6),
-    help='Number of updates to linearly anneal from e_i to e_f.')
+    '--e_anneal', type=int, default=int(10e6),
+    help='Number of transition replays over which to linearly anneal from e_i '
+         'to e_f.')
 parser.add_argument(
     '--ckpt_dir', type=str,
     help='Folder to save checkpoints to.')
@@ -47,7 +42,7 @@ parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
     '--exp_capacity', type=int, default=int(6e5),
-    help='Number of past experiences to hold for replay. (600k ~ 12GB)')
+    help='Number of past experiences to hold for replay. (600k ~ 12.5GB)')
 parser.add_argument(
     '--begin_updates', type=int, default=int(5e5),
     help='Number of experiences before begin to training begins.')
@@ -55,8 +50,8 @@ parser.add_argument(
     '--batch_size', type=int, default=32,
     help='Batch size for each update to the network (multiple of 8)')
 parser.add_argument(
-    '--output_period', type=int, default=1000,
-    help='Number of episodes between outputs (print, checkpoint)')
+    '--output_period', type=int, default=int(2e6),
+    help='Number of transition updates between outputs (print, checkpoint)')
 parser.add_argument(
     '--learning_rate', type=float, default=1e-4,
     help="learning rate for the network. passed to the optimizer.")
@@ -67,6 +62,9 @@ parser.add_argument('--train_record_fname', type=str,
         default="training-record-AdvancedBreakout.txt",
         help="Absolute path to file to save progress to (same as what is"
         " printed to cmd line.")
+parser.add_argument('--train_steps', type=int, default=int(100e6),
+                    help="Number of transition replays to experience "
+                         "(will update train_steps // batch_size times)")
 parser.add_argument(
     '--show_random', type=bool, default=False,
     help="Use random actions when mode=show at a rate of e_f")
@@ -79,11 +77,7 @@ parser.add_argument('--beta_i', type=float, default=.4,
                     help="initial weighting for bias correction")
 parser.add_argument('--beta_f', type=float, default=1,
                     help="final weighting for bias correction")
-parser.add_argument(
-    '--beta_anneal', type=int, default=int(150e6),
-    help="Number of transitions over which to anneal beta_i to beta_f"
-         "(multiple of batch_size)")
-parser.add_argument('--weight_offset', type=float, default=.01,
+parser.add_argument('--priority_weight_offset', type=float, default=.01,
                     help="small value so no transition has 0 weight.")
 
 
@@ -170,9 +164,6 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
         Perform a basic Q learning update by taking a batch of experiences from
         memory and replaying them.
         :param sess: tf.Session()
-        :param episode: used to scale the loss so that we aren't just
-            weighted to look at old states that haven't been
-            updated recently.
         """
         # Get a batch of past experiences.
         ids, states, actions, rewards, next_states, not_terminals, IS_weights =\
@@ -222,8 +213,6 @@ def get_qnet(args, scope=''):
     the same params each time.
     """
     assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
-    assert args.beta_anneal % args.batch_size == 0,\
-        "beta_anneal must be a multiple of batch_size"
 
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         return AdvancedBreakoutQnet(
@@ -231,8 +220,8 @@ def get_qnet(args, scope=''):
             optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
             exp_buf_capacity=args.exp_capacity, discount=args.future_discount,
             alpha=args.alpha, beta_i=args.beta_i, beta_f=args.beta_f,
-            beta_anneal=args.beta_anneal // args.batch_size,
-            weight_offset=args.weight_offset)
+            beta_anneal=args.train_steps // args.batch_size,
+            weight_offset=args.priority_weight_offset)
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -243,12 +232,14 @@ def play_episode(args, sess, env, qnet, e):
     :param env: gym.make()
     :param qnet: class which holds the NN to play and update.
     :param e: chance of a random action selection.
-    :return: reward earned in the game, update value of e
+    :return: reward earned in the game, update value of e, transitions updated
+        against.
     """
     done = False
     _ = env.reset()
     reward = 0  # total reward for this episode
     turn = 0
+    transitions = 0  # updates * batch_size
     lives = 5  # Always start with 5 lives
     terminal = True  # Anytime we lose a life, and beginning of episode.
 
@@ -268,7 +259,7 @@ def play_episode(args, sess, env, qnet, e):
             action = qnet.rand_action()
 
         # Perform an action, prep the data, and store as an experience
-        img, r, done, info = env.step(action + 1) # {1, 2, 3}
+        img, r, done, info = env.step(action + 1)  # {1, 2, 3}
         img = np.reshape(preprocess_img(img), (85, 80, 1))
         next_state = np.concatenate((state[:, :, 1:], img), axis=2)
         if info['ale.lives'] < lives:
@@ -283,54 +274,53 @@ def play_episode(args, sess, env, qnet, e):
                 # We want to use each experience on average 8 times so
                 # that's why for a batch size of 8 we would update every turn.
                 qnet.update(sess)
-            if e > args.e_f:
-                # Reduce once for every update on 8 states. This makes e
-                # not dependent on the batch_size.
-                e -= (args.e_i - args.e_f) / args.e_anneal
+                transitions += qnet.batch_size
+                if e > args.e_f:
+                    # Reduce once for every update on 8 states. This makes e
+                    # not dependent on the batch_size.
+                    e -= (qnet.batch_size*(args.e_i - args.e_f)) / args.e_anneal
 
         state = next_state
         reward += r
         turn += 1
 
-    return reward, e, turn
+    return reward, e, transitions
 
-def maybe_output(args, sess, saver, episode, e, rewards, turn, qnet):
+def write_output(args, sess, saver, last_output_ep, e, rewards,
+                 transitions, qnet):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
     :param args: parser.parse_args
     :param sess: tf.Session()
     :param saver: tf.train.Saver()
-    :param episode: Episode number
+    :param last_output_ep: number of episodes played at last output
     :param e: chance of random action
     :param rewards: list of rewards for each episode played.
-    :param turn: total number of turns played in training.
+    :param transitions: Number of transitions replayed.
     :param qnet: NN being trained
     :return:
     """
+    num_eps = len(rewards) - last_output_ep
 
-    if (episode +1) % args.output_period != 0:
-        return
-
-    # Print info about the state of the network
-    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S ")
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mem_usg_str = \
         'mem_usage={:0.2f}GB'.format(getrusage(RUSAGE_SELF).ru_maxrss / 2**20)
-    episode_str = ' episode=' + str(episode+1)
+    episode_str = 'episode=' + str(len(rewards))
+    reward_str = 'avg_reward_last_' + str(num_eps) + '_games=' + \
+                 str(sum(rewards[-num_eps:]) // num_eps)
     e_str = 'e={:0.2f}'.format(e)
-    reward_str = 'reward_last_' + str(args.output_period) + '_games=' +\
-            str(int(sum(rewards[-args.output_period:])))
-    turn_str = 'turn=' + str(turn)
-    beta_str =  "beta=" + str(qnet.exp_buf.beta)
+    transitions_str ='training_step=' + str(transitions)
+    beta_str = 'beta={:0.3f}'.format(qnet.exp_buf.beta)
 
-    output_str = ' '.join((time_str, mem_usg_str, episode_str, reward_str,
-                           e_str, turn_str, beta_str))
+    output_str = '  '.join((time_str, mem_usg_str, episode_str, reward_str,
+                            e_str, transitions_str, beta_str))
     print(output_str)
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write(output_str + '\n')
 
     # save the model
-    model_name = 'model-AdvancedBreakout-' + str(episode+1) + '.ckpt'
+    model_name = 'model-AdvancedBreakout-' + str(transitions) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def train(args):
@@ -345,8 +335,9 @@ def train(args):
     """
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write("AdvancedBreakout -- begin training --\n")
-    env = gym.make('BreakoutDeterministic-v4')
+
     tf.reset_default_graph()
+    env = gym.make('BreakoutDeterministic-v4')
     qnet = get_qnet(args)
 
     init = tf.global_variables_initializer()
@@ -356,17 +347,28 @@ def train(args):
     with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
         sess.run(init)
         e = args.e_i
-        episode = 0
+        last_output_ep = 0
         rewards = []
-        turn = 0
+        transitions = 0  # number of transitions updated against
+        next_output = args.output_period
 
-        while episode < 50000:
+        while transitions < args.train_steps:
             r, e, t = play_episode(args, sess, env, qnet, e)
-            turn += t
+            if transitions == 0 and t > 0:
+                # Output status from before training starts.
+                write_output(args, sess, saver, last_output_ep, e, rewards,
+                             transitions, qnet)
+                last_output_ep = len(rewards)
+
+            transitions += t
             rewards.append(r)
 
-            episode += 1
-            maybe_output(args, sess, saver, episode, e, rewards, turn, qnet)
+            if transitions > next_output:
+                # Regular output during training.
+                write_output(args, sess, saver, last_output_ep, e, rewards,
+                             transitions, qnet)
+                next_output += args.output_period
+                last_output_ep = len(rewards)
 
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write('\n\n')
