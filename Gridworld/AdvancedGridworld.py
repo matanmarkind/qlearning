@@ -107,6 +107,7 @@ class AdvancedGridworldQnet(BaseReplayQnet):
         :return: Last layer of the NN.
         """
         # TODO: use dropout
+        print('state_input', self.state_input)
         conv1 = tf.layers.conv2d(self.state_input, 16, (3, 3), (2, 2),
                                  activation=tf.nn.relu)
         print('conv1', conv1)
@@ -327,8 +328,6 @@ def train(args):
         transitions = 0  # number of transitions updated against
         next_output = args.output_period
 
-        # TODO: switch to basing printing and completion based on number of
-        # transitions replayed instead of episodes.
         while transitions < args.train_steps:
             r, e, t = play_episode(args, sess, env, qnet, e)
             if transitions == 0 and t > 0:
