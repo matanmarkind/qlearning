@@ -276,14 +276,12 @@ def train(args):
         transitions = 0  # number of transitions updated against
         next_output = args.output_period
 
-        # TODO: switch to basing printing and completion based on number of
-        # transitions replayed instead of episodes.
         while transitions < args.train_steps:
             r, e, t = play_episode(args, sess, env, qnet, e)
             if transitions == 0 and t > 0:
                 # Output status from before training starts.
                 write_output(args, sess, saver, last_output_ep, e, rewards,
-                             transitions, qnet)
+                             transitions)
                 last_output_ep = len(rewards)
 
             transitions += t
