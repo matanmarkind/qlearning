@@ -37,7 +37,7 @@ parser.add_argument('--e_i', type=float, default=1,
 parser.add_argument('--e_f', type=float, default=.1,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(50e6),
+    '--e_anneal', type=int, default=int(10e6),
     help='Number of transition replays over which to linearly anneal from e_i '
          'to e_f.')
 parser.add_argument(
@@ -49,7 +49,7 @@ parser.add_argument(
     '--exp_capacity', type=int, default=int(6e5),
     help='Number of past experiences to hold for replay. (600k ~ 12.5GB)')
 parser.add_argument(
-    '--begin_updates', type=int, default=int(5e5),
+    '--begin_updates', type=int, default=int(2e5),
     help='Number of experiences before begin to training begins.')
 parser.add_argument(
     '--batch_size', type=int, default=32,
