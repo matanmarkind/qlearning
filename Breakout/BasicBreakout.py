@@ -34,7 +34,7 @@ parser.add_argument('--mode', type=str, help='train, show')
 # over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
-parser.add_argument('--e_f', type=float, default=.1,
+parser.add_argument('--e_f', type=float, default=.05,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
     '--e_anneal', type=int, default=int(10e6),
