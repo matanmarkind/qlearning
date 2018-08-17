@@ -29,10 +29,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--mode', type=str, help='train, show')
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
-parser.add_argument('--e_f', type=float, default=.05,
+parser.add_argument('--e_f', type=float, default=.01,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(10e6),
+    '--e_anneal', type=int, default=int(4e6),
     help='Number of transition replays over which to linearly anneal from e_i '
          'to e_f.')
 parser.add_argument(
@@ -44,7 +44,7 @@ parser.add_argument(
     '--exp_capacity', type=int, default=int(6e5),
     help='Number of past experiences to hold for replay. (600k ~ 12.5GB)')
 parser.add_argument(
-    '--begin_updates', type=int, default=int(2e5),
+    '--begin_updates', type=int, default=int(1e5),
     help='Number of experiences before begin to training begins.')
 parser.add_argument(
     '--batch_size', type=int, default=32,
@@ -53,7 +53,7 @@ parser.add_argument(
     '--output_period', type=int, default=int(2e6),
     help='Number of transition updates between outputs (print, checkpoint)')
 parser.add_argument(
-    '--learning_rate', type=float, default=1e-4,
+    '--learning_rate', type=float, default=6.25e-5,  # Comes from RainbowDQN
     help="learning rate for the network. passed to the optimizer.")
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
@@ -106,7 +106,8 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
     """
     def __init__(self, input_shape, n_actions, batch_size, optimizer,
                  exp_buf_capacity, discount, alpha, beta_i, beta_f, beta_anneal,
-                 weight_offset):
+                 weight_offset, is_training):
+        self.is_training = is_training
         exp_buf = WeightedExpBuf(exp_buf_capacity, alpha, beta_i, beta_f,
                                  beta_anneal, weight_offset)
         BaseReplayQnet.__init__(
@@ -120,17 +121,30 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
         applied to the final output.
         :return:
         """
+        if (self.is_training):
+            print('using dropout')
+
         print('state_input', self.state_input)
-        conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
+        conv1 = tf.layers.conv2d(self.state_input, 16, (6, 6), (4, 4),
                                  activation=tf.nn.relu)
         print('conv1', conv1)
-        conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
+        conv2 = tf.layers.conv2d(conv1, 32, (5, 5), (2, 2),
                                  activation=tf.nn.relu)
         print('conv2', conv2)
-        hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
+        conv3 = tf.layers.conv2d(conv2, 64, (4, 4), (1, 1),
                                  activation=tf.nn.relu)
-        print('hidden', hidden)
-        return tf.layers.dense(hidden, self.n_actions)
+        print('conv3', conv3)
+        hidden1 = tf.layers.dense(tf.layers.flatten(conv3), 512,
+                                  activation=tf.nn.relu)
+        print('hidden1', hidden1)
+        dropout1 = tf.layers.dropout(hidden1, training=self.is_training)
+        print('dropout1', dropout1)
+        hidden2 = tf.layers.dense(dropout1, 128,
+                                  activation=tf.nn.relu)
+        print('hidden2', hidden2)
+        dropout2 = tf.layers.dropout(hidden2, training=self.is_training)
+        print('dropout2', dropout2)
+        return tf.layers.dense(dropout2, self.n_actions)
 
     def loss_fn(self, expected, actual):
         """
@@ -213,15 +227,16 @@ def get_qnet(args, scope=''):
     the same params each time.
     """
     assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
+    optimizer = tf.train.AdamOptimizer(args.learning_rate, epsilon=1.5e-4)
 
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         return AdvancedBreakoutQnet(
             input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
-            optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-            exp_buf_capacity=args.exp_capacity, discount=args.future_discount,
-            alpha=args.alpha, beta_i=args.beta_i, beta_f=args.beta_f,
-            beta_anneal=args.train_steps // args.batch_size,
-            weight_offset=args.priority_weight_offset)
+            optimizer=optimizer, exp_buf_capacity=args.exp_capacity,
+            discount=args.future_discount, alpha=args.alpha, beta_i=args.beta_i,
+            beta_f=args.beta_f, beta_anneal=args.train_steps // args.batch_size,
+            weight_offset=args.priority_weight_offset,
+            is_training= (args.mode == 'train'))
 
 def play_episode(args, sess, env, qnet, e):
     """
