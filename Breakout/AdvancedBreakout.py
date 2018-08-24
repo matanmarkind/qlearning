@@ -29,10 +29,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--mode', type=str, help='train, show')
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
-parser.add_argument('--e_f', type=float, default=.01,
+parser.add_argument('--e_f', type=float, default=.05,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(4e6),
+    '--e_anneal', type=int, default=int(10e6),
     help='Number of transition replays over which to linearly anneal from e_i '
          'to e_f.')
 parser.add_argument(
@@ -44,7 +44,7 @@ parser.add_argument(
     '--exp_capacity', type=int, default=int(6e5),
     help='Number of past experiences to hold for replay. (600k ~ 12.5GB)')
 parser.add_argument(
-    '--begin_updates', type=int, default=int(1e5),
+    '--begin_updates', type=int, default=int(2e5),
     help='Number of experiences before begin to training begins.')
 parser.add_argument(
     '--batch_size', type=int, default=32,
@@ -53,7 +53,7 @@ parser.add_argument(
     '--output_period', type=int, default=int(2e6),
     help='Number of transition updates between outputs (print, checkpoint)')
 parser.add_argument(
-    '--learning_rate', type=float, default=6.25e-5,  # Comes from RainbowDQN
+    '--learning_rate', type=float, default=1e-4,
     help="learning rate for the network. passed to the optimizer.")
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
@@ -77,6 +77,10 @@ parser.add_argument('--beta_i', type=float, default=.4,
                     help="initial weighting for bias correction")
 parser.add_argument('--beta_f', type=float, default=1,
                     help="final weighting for bias correction")
+# Not sure what value makes sense for the weight offset. Does having an
+# absolute offset even make sense at all? The absolute value of the loss
+# is fairly meaningless, given I am performing a classification with no
+# normalization layer.
 parser.add_argument('--priority_weight_offset', type=float, default=.01,
                     help="small value so no transition has 0 weight.")
 
@@ -125,21 +129,18 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
             print('using dropout')
 
         print('state_input', self.state_input)
-        conv1 = tf.layers.conv2d(self.state_input, 16, (6, 6), (4, 4),
+        conv1 = tf.layers.conv2d(self.state_input, 32, (8, 8), (4, 4),
                                  activation=tf.nn.relu)
         print('conv1', conv1)
-        conv2 = tf.layers.conv2d(conv1, 32, (5, 5), (2, 2),
+        conv2 = tf.layers.conv2d(conv1, 64, (4, 4), (2, 2),
                                  activation=tf.nn.relu)
         print('conv2', conv2)
-        conv3 = tf.layers.conv2d(conv2, 64, (4, 4), (1, 1),
-                                 activation=tf.nn.relu)
-        print('conv3', conv3)
-        hidden1 = tf.layers.dense(tf.layers.flatten(conv3), 512,
+        hidden1 = tf.layers.dense(tf.layers.flatten(conv2), 256,
                                   activation=tf.nn.relu)
         print('hidden1', hidden1)
         dropout1 = tf.layers.dropout(hidden1, training=self.is_training)
         print('dropout1', dropout1)
-        hidden2 = tf.layers.dense(dropout1, 128,
+        hidden2 = tf.layers.dense(dropout1, 32,
                                   activation=tf.nn.relu)
         print('hidden2', hidden2)
         dropout2 = tf.layers.dropout(hidden2, training=self.is_training)
@@ -168,7 +169,7 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
         # that will be selected more often.
         self.IS_weights_input = tf.placeholder(shape=None, dtype=tf.float32)
 
-        return tf.losses.mean_squared_error(
+        return tf.losses.huber_loss(
             labels=expected, predictions=actual,
             weights=self.IS_weights_input,
             reduction=tf.losses.Reduction.NONE)
@@ -227,7 +228,7 @@ def get_qnet(args, scope=''):
     the same params each time.
     """
     assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
-    optimizer = tf.train.AdamOptimizer(args.learning_rate, epsilon=1.5e-4)
+    optimizer = tf.train.AdamOptimizer(args.learning_rate)
 
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         return AdvancedBreakoutQnet(
