@@ -129,10 +129,10 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
             print('using dropout')
 
         print('state_input', self.state_input)
-        conv1 = tf.layers.conv2d(self.state_input, 32, (8, 8), (4, 4),
+        conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
                                  activation=tf.nn.relu)
         print('conv1', conv1)
-        conv2 = tf.layers.conv2d(conv1, 64, (4, 4), (2, 2),
+        conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
                                  activation=tf.nn.relu)
         print('conv2', conv2)
         hidden1 = tf.layers.dense(tf.layers.flatten(conv2), 256,
