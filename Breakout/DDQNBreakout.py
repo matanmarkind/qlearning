@@ -15,18 +15,23 @@ from resource import getrusage, RUSAGE_SELF
 
 import tensorflow as tf
 import numpy as np
-
 import gym, os, argparse, sys, time
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(1, parent_dir)
-from utils.ExperienceBuffer import WeightedExpBuf
+from utils.ExperienceBuffer import ExpBuf
 from utils.BaseReplayQnet import BaseReplayQnet
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, help='train, show')
+# TODO: consider having a 2 step anneal. Here we stop at 10% but that may
+# make long terms planning hard for the network since the further into
+# the future we go, the more likely its planning is to get messed up
+# by a forced random action. Perhaps do 100% -> 10% over X steps, then
+# hold random action at 10% for X steps, then anneal from 10% -> 1%
+# over another X steps.
 parser.add_argument('--e_i', type=float, default=1,
                     help="Initial chance of selecting a random action.")
 parser.add_argument('--e_f', type=float, default=.05,
@@ -59,7 +64,7 @@ parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
 parser.add_argument('--train_record_fname', type=str,
-        default="training-record-AdvancedBreakout.txt",
+        default="training-record-BasicBreakout.txt",
         help="Absolute path to file to save progress to (same as what is"
         " printed to cmd line.")
 parser.add_argument('--train_steps', type=int, default=int(100e6),
@@ -71,18 +76,6 @@ parser.add_argument(
 parser.add_argument(
     '--random_starts', type=int, default=30,
     help='randomly perform stand still at beginning of episode.')
-parser.add_argument('--alpha', type=float, default=.6,
-                    help="Factor for how much weight prioritization")
-parser.add_argument('--beta_i', type=float, default=.4,
-                    help="initial weighting for bias correction")
-parser.add_argument('--beta_f', type=float, default=1,
-                    help="final weighting for bias correction")
-# Not sure what value makes sense for the weight offset. Does having an
-# absolute offset even make sense at all? The absolute value of the loss
-# is fairly meaningless, given I am performing a classification with no
-# normalization layer.
-parser.add_argument('--priority_weight_offset', type=float, default=.01,
-                    help="small value so no transition has 0 weight.")
 
 
 def preprocess_img(img):
@@ -104,19 +97,15 @@ def normalize(states):
     """
     return states.astype(np.float32) / 128. - 1
 
-class AdvancedBreakoutQnet(BaseReplayQnet):
+class BasicBreakoutQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
     def __init__(self, input_shape, n_actions, batch_size, optimizer,
-                 exp_buf_capacity, discount, alpha, beta_i, beta_f, beta_anneal,
-                 weight_offset, is_training):
-        self.is_training = is_training
-        exp_buf = WeightedExpBuf(exp_buf_capacity, alpha, beta_i, beta_f,
-                                 beta_anneal, weight_offset)
+                 exp_buf_capacity, discount):
         BaseReplayQnet.__init__(
-            self, input_shape, n_actions, batch_size, optimizer, exp_buf,
-            discount)
+            self, input_shape, n_actions, batch_size, optimizer,
+            ExpBuf(exp_buf_capacity), discount)
 
     def make_nn_impl(self):
         """
@@ -125,48 +114,28 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
         applied to the final output.
         :return:
         """
-        if (self.is_training):
-            print('using dropout')
-
         print('state_input', self.state_input)
-        conv1 = tf.layers.conv2d(self.state_input, 32, (8, 8), (4, 4),
+        conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
                                  activation=tf.nn.relu)
         print('conv1', conv1)
-        conv2 = tf.layers.conv2d(conv1, 64, (4, 4), (2, 2),
+        conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
                                  activation=tf.nn.relu)
         print('conv2', conv2)
-        hidden1 = tf.layers.dense(tf.layers.flatten(conv2), 256,
-                                  activation=tf.nn.relu)
-        print('hidden1', hidden1)
-        dropout1 = tf.layers.dropout(hidden1, training=self.is_training)
-        print('dropout1', dropout1)
-        return tf.layers.dense(dropout1, self.n_actions)
+        hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
+                                 activation=tf.nn.relu)
+        print('hidden', hidden)
+        return tf.layers.dense(hidden, self.n_actions)
 
     def loss_fn(self, expected, actual):
         """
-        A function for calculating the loss of the neural network.
-        IS_weights_input must be created here since loss_fn is an abstractmethod
-        and must be available to the parent, so dependencies cannot be pushed
-        off until after parent construction. (Seems like a bad design in python,
-        a virtual function should be allowed to depend on things specific to
-        the child/implementer class).
-
+        A function for calculating the loss of the neural network. Common
+        examples include RootMeanSquare or HuberLoss.
         :param expected: a batch of target_vals
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
         """
-        # When using priority replay the network sees surprising events
-        # more often. These events, by their nature, tend to have larger
-        # than median errors. This combination of seeing larger loss
-        # events at a larger frequency, along with the variable priority of
-        # the transitions, adds a bias to the network. Importance sampling
-        # is used to correct for this, downweighting the loss for the events
-        # that will be selected more often.
-        self.IS_weights_input = tf.placeholder(shape=None, dtype=tf.float32)
-
-        return tf.losses.huber_loss(
+        return tf.losses.mean_squared_error(
             labels=expected, predictions=actual,
-            weights=self.IS_weights_input,
             reduction=tf.losses.Reduction.NONE)
 
     def update(self, sess):
@@ -176,16 +145,10 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
         :param sess: tf.Session()
         """
         # Get a batch of past experiences.
-        ids, states, actions, rewards, next_states, not_terminals, IS_weights =\
+        states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
         states = normalize(states)
         next_states = normalize(next_states)
-
-        # Calculate the predicted value from the network based on a previously
-        # experienced state, assuming we perform the same action.
-        fullQ = sess.run(self.main_net,
-                         feed_dict={self.state_input: next_states})
-        pred_vals = fullQ[range(self.batch_size), actions]
 
         # To predict the 'true' Q value, we use the network to predict the value
         # of the next_state, which is the value of the best action we can take
@@ -201,11 +164,6 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
         # If this is a terminal term, trueQ = r
         target_vals = rewards + not_terminals * self.discount * nextQ
 
-        # Update the weighting for each experience based on its TD error.
-        # TODO: why do we take the error before training, don't these weights
-        # become stale as soon as train_op is run?
-        self.exp_buf.update_weights(ids, abs(target_vals - pred_vals))
-
         # Calculate the value of being back in state and performing action. Then
         # compare that the the expected value just calculated. This is used to
         # compute the error for feedback. Then backpropogate the loss so that
@@ -214,8 +172,8 @@ class AdvancedBreakoutQnet(BaseReplayQnet):
                      feed_dict={
                          self.state_input: states,
                          self.action_input: actions,
-                         self.target_vals_input: target_vals,
-                         self.IS_weights_input: IS_weights})
+                         self.target_vals_input: target_vals})
+
 
 def get_qnet(args, scope=''):
     """
@@ -223,16 +181,12 @@ def get_qnet(args, scope=''):
     the same params each time.
     """
     assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
-    optimizer = tf.train.AdamOptimizer(args.learning_rate)
 
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return AdvancedBreakoutQnet(
+        return BasicBreakoutQnet(
             input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
-            optimizer=optimizer, exp_buf_capacity=args.exp_capacity,
-            discount=args.future_discount, alpha=args.alpha, beta_i=args.beta_i,
-            beta_f=args.beta_f, beta_anneal=args.train_steps // args.batch_size,
-            weight_offset=args.priority_weight_offset,
-            is_training= (args.mode == 'train'))
+            optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
+            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -298,7 +252,7 @@ def play_episode(args, sess, env, qnet, e):
     return reward, e, transitions
 
 def write_output(args, sess, saver, last_output_ep, e, rewards,
-                 transitions, qnet):
+                 transitions):
     """
     Periodically we want to create some sort of output (printing, saving, etc...).
     This function does that.
@@ -322,16 +276,15 @@ def write_output(args, sess, saver, last_output_ep, e, rewards,
                  str(sum(rewards[-num_eps:]) // num_eps)
     e_str = 'e={:0.2f}'.format(e)
     transitions_str ='training_step=' + str(transitions)
-    beta_str = 'beta={:0.3f}'.format(qnet.exp_buf.beta)
 
     output_str = '  '.join((time_str, mem_usg_str, episode_str, reward_str,
-                            e_str, transitions_str, beta_str))
+                            e_str, transitions_str))
     print(output_str)
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
         f.write(output_str + '\n')
 
     # save the model
-    model_name = 'model-AdvancedBreakout-' + str(transitions) + '.ckpt'
+    model_name = 'model-BasicBreakout-' + str(transitions) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def train(args):
@@ -345,8 +298,11 @@ def train(args):
     :return:
     """
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
-        f.write("AdvancedBreakout -- begin training --\n")
-
+        f.write("BasicBreakout -- begin training --\n")
+    # TODO: Figure out a way to only hold each img once and then reconstruct
+    # the states from pointers to them. Would probs point to the last and grab
+    # most_recent[-3:] and repeat an initial state 4x in the buffer like we
+    # do to create the initial state now.
     tf.reset_default_graph()
     env = gym.make('BreakoutDeterministic-v4')
     qnet = get_qnet(args)
@@ -368,7 +324,7 @@ def train(args):
             if transitions == 0 and t > 0:
                 # Output status from before training starts.
                 write_output(args, sess, saver, last_output_ep, e, rewards,
-                             transitions, qnet)
+                             transitions)
                 last_output_ep = len(rewards)
 
             transitions += t
@@ -377,7 +333,7 @@ def train(args):
             if transitions > next_output:
                 # Regular output during training.
                 write_output(args, sess, saver, last_output_ep, e, rewards,
-                             transitions, qnet)
+                             transitions)
                 next_output += args.output_period
                 last_output_ep = len(rewards)
 
