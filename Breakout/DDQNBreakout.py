@@ -289,6 +289,9 @@ def play_episode(args, sess, env, qnet, e):
             img = preprocess_img(img)
             state = np.stack((img, img, img, img), axis=2)
             lives = info['ale.lives']
+        if done:
+            # If lost our last life during random_start, nothing left to play
+            break
 
         # Perform an action
         action = qnet.predict(sess, normalize(np.array([state])))[0]
