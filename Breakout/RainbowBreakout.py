@@ -60,7 +60,7 @@ parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
 parser.add_argument('--train_record_fname', type=str,
-        default="training-record-AdvancedBreakout.txt",
+        default="training-record-RainbowBreakout.txt",
         help="Absolute path to file to save progress to (same as what is"
         " printed to cmd line.")
 parser.add_argument('--train_steps', type=int, default=int(100e6),
@@ -105,7 +105,7 @@ def normalize(states):
     """
     return states.astype(np.float32) / 128. - 1
 
-class AdvancedBreakoutQnet(BaseReplayQnet):
+class RainbowBreakoutQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
@@ -227,7 +227,7 @@ def get_qnet(args, scope=''):
     optimizer = tf.train.AdamOptimizer(args.learning_rate)
 
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return AdvancedBreakoutQnet(
+        return RainbowBreakoutQnet(
             input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
             optimizer=optimizer, exp_buf_capacity=args.exp_capacity,
             discount=args.future_discount, alpha=args.alpha, beta_i=args.beta_i,
@@ -332,7 +332,7 @@ def write_output(args, sess, saver, last_output_ep, e, rewards,
         f.write(output_str + '\n')
 
     # save the model
-    model_name = 'model-AdvancedBreakout-' + str(transitions) + '.ckpt'
+    model_name = 'model-RainbowBreakout-' + str(transitions) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def train(args):
@@ -346,7 +346,7 @@ def train(args):
     :return:
     """
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
-        f.write("AdvancedBreakout -- begin training --\n")
+        f.write("RainbowBreakout -- begin training --\n")
 
     tf.reset_default_graph()
     env = gym.make('BreakoutDeterministic-v4')
