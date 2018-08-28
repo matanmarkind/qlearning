@@ -1,13 +1,10 @@
 """
-This is an attempt to recreate the algorithm that was used by deepmind in the
-first major paper they published about beating atari games.
-https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
+This is an attempt to recreate the deepmind DDQN algorithm to beat atari games:
+https://arxiv.org/pdf/1509.06461.pdf
 
-Uses some changes suggested in
-https://becominghuman.ai/lets-build-an-atari-ai-part-1-dqn-df57e8ff3b26
-
-And the gaps were filled based on the implementation in
-https://github.com/boyuanf/DeepQLearning/blob/master/deep_q_learning.py
+article and code that guided this attempt:
+https://towardsdatascience.com/tutorial-double-deep-q-learning-with-dueling-network-architectures-4c1b3fb7f756
+https://github.com/fg91/Deep-Q-Learning/blob/master/DQN.ipynb
 """
 
 from datetime import datetime
@@ -46,8 +43,8 @@ parser.add_argument(
 parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
 parser.add_argument(
-    '--exp_capacity', type=int, default=int(6e5),
-    help='Number of past experiences to hold for replay. (600k ~ 12.5GB)')
+    '--exp_capacity', type=int, default=int(4e5),
+    help='Number of past experiences to hold for replay. (400k ~ 11GB)')
 parser.add_argument(
     '--begin_updates', type=int, default=int(2e5),
     help='Number of experiences before begin to training begins.')
@@ -58,18 +55,23 @@ parser.add_argument(
     '--output_period', type=int, default=int(2e6),
     help='Number of transition updates between outputs (print, checkpoint)')
 parser.add_argument(
-    '--learning_rate', type=float, default=1e-4,
+    '--learning_rate', type=float, default=1e-5,
     help="learning rate for the network. passed to the optimizer.")
+parser.add_argument('--adam_epsilon', type=float, default=1e-8,
+                    help='Constant used by AdamOptimizer')
 parser.add_argument(
     '--future_discount', type=float, default=0.99,
     help="Rate at which to discount future rewards.")
 parser.add_argument('--train_record_fname', type=str,
-        default="training-record-BasicBreakout.txt",
+        default="training-record-DDQNBreakout.txt",
         help="Absolute path to file to save progress to (same as what is"
         " printed to cmd line.")
 parser.add_argument('--train_steps', type=int, default=int(100e6),
                     help="Number of transition replays to experience "
                          "(will update train_steps // batch_size times)")
+parser.add_argument(
+    '--update_target_net_period', type=int, default=int(8e4),
+    help='Number of transition updates between copying main_net to target_net')
 parser.add_argument(
     '--show_random', type=bool, default=False,
     help="Use random actions when mode=show at a rate of e_f")
@@ -97,15 +99,34 @@ def normalize(states):
     """
     return states.astype(np.float32) / 128. - 1
 
-class BasicBreakoutQnet(BaseReplayQnet):
+class DDQNBreakoutQnet(BaseReplayQnet):
     """
     Class to perform basic Q learning
     """
     def __init__(self, input_shape, n_actions, batch_size, optimizer,
-                 exp_buf_capacity, discount):
+                 exp_buf_capacity, discount, update_target_net_period):
+        """
+
+        :param input_shape:
+        :param n_actions:
+        :param batch_size:
+        :param optimizer:
+        :param exp_buf_capacity:
+        :param discount:
+        :param update_target_net: Number of updates between copying main_net to target_net.
+        """
         BaseReplayQnet.__init__(
             self, input_shape, n_actions, batch_size, optimizer,
             ExpBuf(exp_buf_capacity), discount)
+        self.target_net = self.make_nn('target_net')
+        self.transition_updates = 0
+        self.update_target_net_period = update_target_net_period
+
+        main_vars = tf.trainable_variables("main_net")
+        target_vars = tf.trainable_variables("target_net")
+        self.update_target_net_ops = [t_var.assign(m_var.value())
+                                      for m_var, t_var
+                                      in zip(main_vars, target_vars)]
 
     def make_nn_impl(self):
         """
@@ -114,17 +135,51 @@ class BasicBreakoutQnet(BaseReplayQnet):
         applied to the final output.
         :return:
         """
+        # TODO: think about putting the normalization here so don't need to
+        # worry about it everywhere we use the NN.
         print('state_input', self.state_input)
-        conv1 = tf.layers.conv2d(self.state_input, 16, (8, 8), (4, 4),
-                                 activation=tf.nn.relu)
+
+        init = tf.variance_scaling_initializer(scale=2)
+        conv1 = tf.layers.conv2d(
+            self.state_input, filters=32, kernel_size=(8, 8), strides=4,
+            activation=tf.nn.relu, kernel_initializer=init, use_bias=False,
+            name="conv1")
         print('conv1', conv1)
-        conv2 = tf.layers.conv2d(conv1, 32, (4, 4), (2, 2),
-                                 activation=tf.nn.relu)
+        conv2 = tf.layers.conv2d(
+            conv1, filters=64, kernel_size=(4, 4), strides=2, use_bias=False,
+            activation=tf.nn.relu, kernel_initializer=init, name="conv2")
         print('conv2', conv2)
-        hidden = tf.layers.dense(tf.layers.flatten(conv2), 256,
-                                 activation=tf.nn.relu)
-        print('hidden', hidden)
-        return tf.layers.dense(hidden, self.n_actions)
+        conv3 = tf.layers.conv2d(
+            conv2, filters=64, kernel_size=(3, 3), strides=1, use_bias=False,
+            activation=tf.nn.relu, kernel_initializer=init, name="conv3")
+        print('conv3', conv3)
+        conv4 = tf.layers.conv2d(
+            conv3, filters=1024, kernel_size=(7, 6), strides=1, use_bias=False,
+            activation=tf.nn.relu, kernel_initializer=init, name="conv4")
+        print('conv4', conv4)
+
+        # Deuling networks - split now into value network, which should learn
+        # the value of being in a given state, and advantage network, which
+        # should learn the relative advantage of each possible action.
+        vstream, astream = tf.split(conv4, 2, 3)
+        vstream = tf.layers.flatten(vstream)
+        print('vstream', vstream)
+        astream = tf.layers.flatten(astream)
+        print('astream', astream)
+        value = tf.layers.dense(
+            vstream, units=1, kernel_initializer=init, name="value")
+        print('value', value)
+        advantage = tf.layers.dense(
+            astream, units=self.n_actions, kernel_initializer=init,
+            name="advantage")
+        print('advantage', advantage)
+        print()  # Add empty line after finishing a network.
+
+        # Subtract the average advantage since advantage should only be used to
+        # differentiate between actions, not change the net value of the we
+        # expect to get from this state.
+        avg_advantage = tf.reduce_mean(advantage, axis=1, keepdims=True)
+        return value + advantage - avg_advantage
 
     def loss_fn(self, expected, actual):
         """
@@ -134,9 +189,8 @@ class BasicBreakoutQnet(BaseReplayQnet):
         :param actual: a batch of ouputs from the network
         :return: a batch of losses.
         """
-        return tf.losses.mean_squared_error(
-            labels=expected, predictions=actual,
-            reduction=tf.losses.Reduction.NONE)
+        return tf.losses.huber_loss(labels=expected, predictions=actual,
+                                    reduction=tf.losses.Reduction.NONE)
 
     def update(self, sess):
         """
@@ -144,23 +198,30 @@ class BasicBreakoutQnet(BaseReplayQnet):
         memory and replaying them.
         :param sess: tf.Session()
         """
+
+        # Every T updates, copy the main_net, which is the one being updated,
+        # to target_net so that the Q value predictions are up to date. Done
+        # before frame_update+= so that on the first update main_net is copied
+        # to target_net.
+        self.update_target_net(sess)
+        self.transition_updates += self.batch_size
+
         # Get a batch of past experiences.
         states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
         states = normalize(states)
         next_states = normalize(next_states)
 
-        # To predict the 'true' Q value, we use the network to predict the value
-        # of the next_state, which is the value of the best action we can take
-        # when in that state. Then take the value that the network predicts
-        # we can get from the next_state.
+        # Double DQN - To predict the 'true' Q value, we use main_net to predict
+        # the action we should take in the next state, and use target_net to
+        # predict the value we expect to get from taking that action.
         next_actions = self.predict(sess, next_states)
-        fullQ = sess.run(self.main_net,
+        fullQ = sess.run(self.target_net,
                          feed_dict={self.state_input: next_states})
         nextQ = fullQ[range(self.batch_size), next_actions]
 
         # Discounted future value:
-        # trueQ = r + discount * Q(next_state, next_action)
+        # trueQ = r + discount * Q_target(next_state, next_action)
         # If this is a terminal term, trueQ = r
         target_vals = rewards + not_terminals * self.discount * nextQ
 
@@ -174,6 +235,11 @@ class BasicBreakoutQnet(BaseReplayQnet):
                          self.action_input: actions,
                          self.target_vals_input: target_vals})
 
+    def update_target_net(self, sess):
+        if self.transition_updates % self.update_target_net_period == 0:
+            for copy_op in self.update_target_net_ops:
+                sess.run(copy_op)
+
 
 def get_qnet(args, scope=''):
     """
@@ -182,11 +248,14 @@ def get_qnet(args, scope=''):
     """
     assert args.batch_size % 8 == 0, "batch_size must be a multiple of 8"
 
+    optimizer=tf.train.AdamOptimizer(learning_rate=args.learning_rate,
+                                     epsilon=args.adam_epsilon)
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        return BasicBreakoutQnet(
-            input_shape = (85, 80, 3), n_actions=3, batch_size=args.batch_size,
-            optimizer=tf.train.RMSPropOptimizer(.00025, decay=.95, epsilon=.01),
-            exp_buf_capacity=args.exp_capacity, discount=args.future_discount)
+        return DDQNBreakoutQnet(
+            input_shape = (85, 80, 4), n_actions=4, batch_size=args.batch_size,
+            optimizer=optimizer, exp_buf_capacity=args.exp_capacity,
+            update_target_net_period=args.update_target_net_period,
+            discount=args.future_discount)
 
 def play_episode(args, sess, env, qnet, e):
     """
@@ -205,7 +274,6 @@ def play_episode(args, sess, env, qnet, e):
     reward = 0  # total reward for this episode
     turn = 0
     transitions = 0  # updates * batch_size
-    lives = 5  # Always start with 5 lives
     terminal = True  # Anytime we lose a life, and beginning of episode.
 
     while not done:
@@ -215,36 +283,40 @@ def play_episode(args, sess, env, qnet, e):
             # the way the game starts, begin the game by not doing anything and
             # letting the ball move.
             for _ in range(np.random.randint(1, args.random_starts)):
-                img, _, done, info = env.step(1)  # starts game, but stays still
+                # Perform random actions at the beginning so the network doesn't
+                # just learn a sequence of steps to always take.
+                img, _, done, info = env.step(env.action_space.sample())
             img = preprocess_img(img)
-            state = np.stack((img, img, img), axis=2)
+            state = np.stack((img, img, img, img), axis=2)
+            lives = info['ale.lives']
 
+        # Perform an action
         action = qnet.predict(sess, normalize(np.array([state])))[0]
         if np.random.rand(1) < e:
             action = qnet.rand_action()
+        img, r, done, info = env.step(action)
 
-        # Perform an action, prep the data, and store as an experience
-        img, r, done, info = env.step(action + 1)  # {1, 2, 3}
+        # Store as an experience
         img = np.reshape(preprocess_img(img), (85, 80, 1))
         next_state = np.concatenate((state[:, :, 1:], img), axis=2)
         if info['ale.lives'] < lives:
             terminal = True
-            lives = info['ale.lives']
         qnet.add_experience(state, action, r, next_state, terminal)
 
-        if qnet.exp_buf_size() > args.begin_updates:
+        # Updates
+        if qnet.exp_buf_size() > args.begin_updates and\
+                turn % (qnet.batch_size // 8) == 0:
             # Once we have enough experiences in the buffer we can
-            # start learning.
-            if turn % (qnet.batch_size // 8) == 0:
-                # We want to use each experience on average 8 times so
-                # that's why for a batch size of 8 we would update every turn.
-                qnet.update(sess)
-                transitions += qnet.batch_size
-                if e > args.e_f:
-                    # Reduce once for every update on 8 states. This makes e
-                    # not dependent on the batch_size.
-                    e -= (qnet.batch_size*(args.e_i - args.e_f)) / args.e_anneal
+            # start learning. We want to use each experience on average 8 times
+            # so that's why for a batch size of 8 we would update every turn.
+            qnet.update(sess)
+            transitions += qnet.batch_size
+            if e > args.e_f:
+                # Reduce once for every update on 8 states. This makes e
+                # not dependent on the batch_size.
+                e -= (qnet.batch_size*(args.e_i - args.e_f)) / args.e_anneal
 
+        # Prep for the next turn
         state = next_state
         reward += r
         turn += 1
@@ -284,7 +356,7 @@ def write_output(args, sess, saver, last_output_ep, e, rewards,
         f.write(output_str + '\n')
 
     # save the model
-    model_name = 'model-BasicBreakout-' + str(transitions) + '.ckpt'
+    model_name = 'model-DDQNBreakout-' + str(transitions) + '.ckpt'
     saver.save(sess, os.path.join(args.ckpt_dir, model_name))
 
 def train(args):
@@ -298,7 +370,7 @@ def train(args):
     :return:
     """
     with open(os.path.join(args.ckpt_dir, args.train_record_fname), 'a') as f:
-        f.write("BasicBreakout -- begin training --\n")
+        f.write("DDQNBreakout -- begin training -- " + str(args) + "\n")
     # TODO: Figure out a way to only hold each img once and then reconstruct
     # the states from pointers to them. Would probs point to the last and grab
     # most_recent[-3:] and repeat an initial state 4x in the buffer like we
@@ -347,28 +419,28 @@ def show_game(args):
 
     saver = tf.train.Saver()
     tf.get_default_graph().finalize()
-    with tf.Session(config=tf.ConfigProto(operation_timeout_in_ms=10000)) as sess:
+    with tf.Session() as sess:
         saver.restore(sess, args.restore_ckpt)
         done = False
         img = env.reset()
         _ = env.render()
         img = preprocess_img(img)
-        state = np.stack((img, img, img), axis=2)
+        state = np.stack((img, img, img, img), axis=2)
         reward, turns = 0, 0
 
         while not done:
             t1 = time.time()
             action = qnet.predict(sess, normalize(np.array([state])))[0]
             if args.show_random and np.random.rand(1) < args.e_f:
-                action = 0  # Doesn't seem to like restarting
+                action = 1 # Doesn't seem to like restarting
 
-            img, r, done, _ = env.step(action + 1) # {1, 2, 3}
+            img, r, done, _ = env.step(action)
             _ = env.render()
             img = np.reshape(preprocess_img(img), (85, 80, 1))
             state = np.concatenate((state[:, :, 1:], img), axis=2)
             reward += r
             turns += 1
-            time.sleep(max(0, .05 - (time.time() - t1)))
+            time.sleep(max(0, .025 - (time.time() - t1)))
 
     print('turns =', turns, ' reward =', reward)
 
