@@ -42,7 +42,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
         self.exp_buf = exp_buf
 
         # Create tensors to take batches of inputs
-        self.create_inputs()
+        self._create_inputs()
 
         # Create the NN used to predict the value of each action for a given
         # state. Called main_net since this network is the main focus of what
@@ -62,7 +62,7 @@ class BaseReplayQnet(metaclass=ABCMeta):
         # The network is then updated based on backpropogating this value.
         self.loss, self.train_op = self.make_train_op(optimizer)
 
-    def create_inputs(self):
+    def _create_inputs(self):
       """
       Create tensors to take batches of inputs
       - state = 4 (105, 80) images stacked together.
