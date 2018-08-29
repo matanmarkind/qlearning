@@ -23,6 +23,7 @@ from utils.BaseReplayQnet import BaseReplayQnet
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--mode', type=str, help='train, show')
+# TODO: The epsilon process here doesn't match that of the example.
 # TODO: consider having a 2 step anneal. Here we stop at 10% but that may
 # make long terms planning hard for the network since the further into
 # the future we go, the more likely its planning is to get messed up
@@ -34,7 +35,7 @@ parser.add_argument('--e_i', type=float, default=1,
 parser.add_argument('--e_f', type=float, default=.05,
                     help="Final chance of selecting a random action.")
 parser.add_argument(
-    '--e_anneal', type=int, default=int(10e6),
+    '--e_anneal', type=int, default=int(8e6),
     help='Number of transition replays over which to linearly anneal from e_i '
          'to e_f.')
 parser.add_argument(
@@ -42,11 +43,12 @@ parser.add_argument(
     help='Folder to save checkpoints to.')
 parser.add_argument('--restore_ckpt', type=str,
                     help='path to restore a ckpt from')
+# TODO: the capacity from deepmind/example is 1M, but I don't have room for that on this computer
 parser.add_argument(
     '--exp_capacity', type=int, default=int(4e5),
     help='Number of past experiences to hold for replay. (400k ~ 11GB)')
 parser.add_argument(
-    '--begin_updates', type=int, default=int(2e5),
+    '--begin_updates', type=int, default=int(5e4),
     help='Number of experiences before begin to training begins.')
 parser.add_argument(
     '--batch_size', type=int, default=32,
@@ -91,13 +93,6 @@ def preprocess_img(img):
     """
     return np.mean(img[::2, ::2], axis=2).astype(np.uint8)[15:100, :]
 
-def normalize(states):
-    """
-
-    :param states: numpy array of states
-    :return: normalized img with values on [-1, 1)
-    """
-    return states.astype(np.float32) / 128. - 1
 
 class DDQNBreakoutQnet(BaseReplayQnet):
     """
@@ -128,6 +123,18 @@ class DDQNBreakoutQnet(BaseReplayQnet):
                                       for m_var, t_var
                                       in zip(main_vars, target_vars)]
 
+    def _create_inputs(self):
+        """
+        Create tensors to take batches of inputs
+        - state = 4 (105, 80) images stacked together.
+        - action = used to replay an action taken before.
+        - target_vals = "true" Q value for calculating loss.
+        """
+        self.state_input = tf.placeholder(shape=(None, *self.input_shape),
+                                          dtype=tf.uint8)
+        self.action_input = tf.placeholder(shape=None, dtype=tf.int32)
+        self.target_vals_input = tf.placeholder(shape=None, dtype=tf.float32)
+
     def make_nn_impl(self):
         """
         Make a NN to take in a batch of states (3 preprocessed images) with
@@ -137,11 +144,12 @@ class DDQNBreakoutQnet(BaseReplayQnet):
         """
         # TODO: think about putting the normalization here so don't need to
         # worry about it everywhere we use the NN.
-        print('state_input', self.state_input)
+        normalized_input = tf.to_float(self.state_input) / 128. - 1
+        print('normalized_input', normalized_input)
 
         init = tf.variance_scaling_initializer(scale=2)
         conv1 = tf.layers.conv2d(
-            self.state_input, filters=32, kernel_size=(8, 8), strides=4,
+            normalized_input, filters=32, kernel_size=(8, 8), strides=4,
             activation=tf.nn.relu, kernel_initializer=init, use_bias=False,
             name="conv1")
         print('conv1', conv1)
@@ -153,8 +161,9 @@ class DDQNBreakoutQnet(BaseReplayQnet):
             conv2, filters=64, kernel_size=(3, 3), strides=1, use_bias=False,
             activation=tf.nn.relu, kernel_initializer=init, name="conv3")
         print('conv3', conv3)
+        # TODO: example uses 1024 filters, but I don't have a GPU so trying with a smaller network
         conv4 = tf.layers.conv2d(
-            conv3, filters=1024, kernel_size=(7, 6), strides=1, use_bias=False,
+            conv3, filters=512, kernel_size=(7, 6), strides=1, use_bias=False,
             activation=tf.nn.relu, kernel_initializer=init, name="conv4")
         print('conv4', conv4)
 
@@ -209,8 +218,6 @@ class DDQNBreakoutQnet(BaseReplayQnet):
         # Get a batch of past experiences.
         states, actions, rewards, next_states, not_terminals = \
             self.exp_buf.sample(self.batch_size)
-        states = normalize(states)
-        next_states = normalize(next_states)
 
         # Double DQN - To predict the 'true' Q value, we use main_net to predict
         # the action we should take in the next state, and use target_net to
@@ -294,7 +301,7 @@ def play_episode(args, sess, env, qnet, e):
             break
 
         # Perform an action
-        action = qnet.predict(sess, normalize(np.array([state])))[0]
+        action = qnet.predict(sess, np.array([state]))[0]
         if np.random.rand(1) < e:
             action = qnet.rand_action()
         img, r, done, info = env.step(action)
@@ -433,7 +440,7 @@ def show_game(args):
 
         while not done:
             t1 = time.time()
-            action = qnet.predict(sess, normalize(np.array([state])))[0]
+            action = qnet.predict(sess, np.array([state]))[0]
             if args.show_random and np.random.rand(1) < args.e_f:
                 action = 1 # Doesn't seem to like restarting
 
