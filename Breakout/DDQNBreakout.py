@@ -99,7 +99,8 @@ class DDQNBreakoutQnet(BaseReplayQnet):
     Class to perform basic Q learning
     """
     def __init__(self, input_shape, n_actions, batch_size, optimizer,
-                 exp_buf_capacity, discount, update_target_net_period):
+                 exp_buf_capacity, discount, update_target_net_period,
+                 is_training):
         """
 
         :param input_shape:
@@ -110,6 +111,7 @@ class DDQNBreakoutQnet(BaseReplayQnet):
         :param discount:
         :param update_target_net: Number of updates between copying main_net to target_net.
         """
+        self.is_training = is_training
         BaseReplayQnet.__init__(
             self, input_shape, n_actions, batch_size, optimizer,
             ExpBuf(exp_buf_capacity), discount)
@@ -171,9 +173,11 @@ class DDQNBreakoutQnet(BaseReplayQnet):
         # the value of being in a given state, and advantage network, which
         # should learn the relative advantage of each possible action.
         vstream, astream = tf.split(conv4, 2, 3)
-        vstream = tf.layers.flatten(vstream)
+        vstream = tf.layers.dropout(tf.layers.flatten(vstream), rate=.2,
+                                    training=self.is_training)
         print('vstream', vstream)
-        astream = tf.layers.flatten(astream)
+        astream = tf.layers.dropout(tf.layers.flatten(astream), rate=.2,
+                                    training=self.is_training)
         print('astream', astream)
         value = tf.layers.dense(
             vstream, units=1, kernel_initializer=init, name="value")
@@ -262,7 +266,7 @@ def get_qnet(args, scope=''):
             input_shape = (85, 80, 4), n_actions=4, batch_size=args.batch_size,
             optimizer=optimizer, exp_buf_capacity=args.exp_capacity,
             update_target_net_period=args.update_target_net_period,
-            discount=args.future_discount)
+            discount=args.future_discount, is_training=(args.mode=='train'))
 
 def play_episode(args, sess, env, qnet, e):
     """
